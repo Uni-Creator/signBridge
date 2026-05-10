@@ -1,0 +1,25 @@
+
+.vscode/
+
+# Backend
+
+__pycache__
+Include
+backend/Lib
+backend/Scripts
+backend/venv
+backend/.venv
+backend/share
+
+.env
+.secrets*
+firebase.json
+.env.local
+
+*.task
+*.cfg
+
+*.mp4
+*.mov
+*.webm
+saved_captures/
