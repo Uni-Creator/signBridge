@@ -283,9 +283,4 @@ MIT License. See `LICENSE` for details.
 
 ## Contact
 
-<<<<<<< HEAD
-**Abhay**: [abhayr24564@gmail.com](mailto:abhayr24564@gmail.com)  
-GitHub: [@Uni-Creator](https://github.com/Uni-Creator)
-=======
 For questions or inquiries, reach out at [abhayr24564@gmail.com](mailto:abhayr24564@gmail.com).
->>>>>>> 706077e9ea1edce514ac7ac4e2c29be1ecadfe10
