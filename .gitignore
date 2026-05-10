@@ -62,11 +62,12 @@ firebase.json
 
 # Model
 
-dataset/*
-*.zip
+model/dataset/*
+model/*.zip
 
-checkpoints/*
-*.pt
+model/checkpoints/*
+model/*.pt
 
-
-*.txt
+model/tokenizer.json
+model/config.json
+model/vocab.json
