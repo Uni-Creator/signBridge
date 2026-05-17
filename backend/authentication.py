@@ -2,7 +2,9 @@ import json
 
 import pyrebase
 
-firebaseJSON = open('firebase.json')
+firebase_path = "/etc/secrets/firebase.json" if os.path.exists("/etc/secrets/firebase.json") else "firebase.json"
+
+firebaseJSON = open(firebase_path)
 firebaseConfig = json.load(firebaseJSON)
 
 # initialize firebase

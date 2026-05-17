@@ -70,9 +70,11 @@ class AuthProvider extends ChangeNotifier {
         notifyListeners();
         return true;
       } else {
+        debugPrint(userId);
         _error = 'Registration failed. Email may already be in use.';
       }
     } catch (e) {
+      debugPrint(e.toString());
       _error = 'Connection error. Is the server running?';
     }
 
