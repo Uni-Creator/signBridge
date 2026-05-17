@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import pyrebase
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +25,14 @@ def register_account(email, password):
     try:
         user = auth.create_user_with_email_and_password(email, password)
         return user["localId"]
-    except Exception as e:
-        logger.error(f"Register failed: {e}")
-        return ""   
-
+    except Exception:
+        logger.exception("Register failed")
+        return ""
 
 def login_account(email, password):
     try:
         login = auth.sign_in_with_email_and_password(email, password)
         return login["localId"]
-    except Exception as e:
-        logger.error(f"Login failed: {e}")
-        return "" 
+    except Exception:
+        logger.exception("Login failed")
+        return ""
