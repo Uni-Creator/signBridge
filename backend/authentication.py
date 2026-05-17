@@ -1,8 +1,15 @@
 import json
-
+import logging
+import os
 import pyrebase
 
-firebase_path = "/etc/secrets/firebase.json" if os.path.exists("/etc/secrets/firebase.json") else "firebase.json"
+logger = logging.getLogger(__name__)
+
+firebase_path = (
+    "/etc/secrets/firebase.json"
+    if os.path.exists("/etc/secrets/firebase.json")
+    else "firebase.json"
+)
 
 firebaseJSON = open(firebase_path)
 firebaseConfig = json.load(firebaseJSON)
@@ -19,7 +26,7 @@ def register_account(email, password):
         return user["localId"]
     except Exception as e:
         logger.error(f"Register failed: {e}")
-        return f"Register failed: {e}"
+        return ""   
 
 
 def login_account(email, password):
@@ -28,4 +35,4 @@ def login_account(email, password):
         return login["localId"]
     except Exception as e:
         logger.error(f"Login failed: {e}")
-        return f"Login failed: {e}"
+        return "" 
