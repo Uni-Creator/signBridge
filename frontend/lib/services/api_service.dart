@@ -1,10 +1,11 @@
 import 'dart:convert';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 
 class ApiService {
   // Change this to your local machine IP when running on a physical device
   // Use 10.0.2.2 for Android emulator
-  static const String baseUrl = 'https://signsight-8tpx.onrender.com';
+  static String get baseUrl => dotenv.env['API_BASE_URL']!;
 
   static Future<String> login(String email, String password) async {
     final response = await http.post(

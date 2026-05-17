@@ -9,6 +9,8 @@ Endpoints:
   POST /history    → Store a translation
   WS   /ws         → Real-time sign detection
 """
+from gevent import monkey
+monkey.patch_all()
 
 import base64
 import json
@@ -199,6 +201,7 @@ def websocket_translate(ws):
     landmarks_enabled = pose_detector is not None and hand_detector is not None
 
     if not model_api.check_health():
+        ws.send(json.dumps({"status": "api_warming", "message": "Model API warming up, please wait..."}))
         logger.warning("Remote model API not ready — predictions may fail.")
     else:
         logger.info("Remote model API healthy.")

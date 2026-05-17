@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 typedef OnTranslationCallback = void Function(String label, double confidence);
@@ -8,7 +9,7 @@ typedef OnErrorCallback = void Function(String error);
 typedef OnConnectionCallback = void Function(bool connected);
 
 class WebSocketService {
-  static const String wsUrl = 'wss://signsight-8tpx.onrender.com/ws';
+  static String get wsUrl => dotenv.env['WS_URL']!;
 
   WebSocketChannel? _channel;
   bool _isConnected = false;
