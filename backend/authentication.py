@@ -13,19 +13,19 @@ firebase = pyrebase.initialize_app(firebaseConfig)
 auth = firebase.auth()
 
 
-def register_account(email, password):
+ddef register_account(email, password):
     try:
-        # create user account in firebase
         user = auth.create_user_with_email_and_password(email, password)
         return user["localId"]
-    except:
-        return ""
+    except Exception as e:
+        logger.error(f"Register failed: {e}")
+        return f"Register failed: {e}"
 
 
 def login_account(email, password):
     try:
-        # verify user account and return user id
         login = auth.sign_in_with_email_and_password(email, password)
         return login["localId"]
-    except:
-        return ""
+    except Exception as e:
+        logger.error(f"Login failed: {e}")
+        return f"Login failed: {e}"
