@@ -113,7 +113,7 @@ def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.I
 # App setup 
 from authentication import register_account, login_account
 from history import retrieve_history, store_translation
-from backend_model import ISLModelAPI
+from model import ISLModelAPI
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)

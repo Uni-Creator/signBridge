@@ -9,3 +9,4 @@ requests==2.29.0
 mediapipe==0.10.11
 gunicorn
 gevent
+python-dotenv
