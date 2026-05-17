@@ -9,9 +9,6 @@ Endpoints:
   POST /history    → Store a translation
   WS   /ws         → Real-time sign detection
 """
-from gevent import monkey
-monkey.patch_all()
-
 import base64
 import json
 import logging
