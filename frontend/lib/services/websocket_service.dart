@@ -8,8 +8,7 @@ typedef OnErrorCallback = void Function(String error);
 typedef OnConnectionCallback = void Function(bool connected);
 
 class WebSocketService {
-  // Change to your server IP. For Android emulator: ws://10.0.2.2:5000/ws
-  static const String wsUrl = 'ws://10.62.125.13:5000/ws';
+  static const String wsUrl = 'wss://signsight-8tpx.onrender.com/ws';
 
   WebSocketChannel? _channel;
   bool _isConnected = false;

@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 class ApiService {
   // Change this to your local machine IP when running on a physical device
   // Use 10.0.2.2 for Android emulator
-  static const String baseUrl = 'http://10.223.157.13:5000';
+  static const String baseUrl = 'https://signsight-8tpx.onrender.com';
 
   static Future<String> login(String email, String password) async {
     final response = await http.post(
