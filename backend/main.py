@@ -113,7 +113,7 @@ def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.I
 
 
 # App setup 
-from authentication import register_account, login_account
+from authentication import register_account, login_account, forgot_password
 from history import retrieve_history, store_translation
 from model import ISLModelAPI
 
@@ -159,6 +159,24 @@ def login():
     user_id = login_account(account["email"], account["password"])
     logger.info(f"Login: {account['email']} → id={user_id or 'FAILED'}")
     return json.dumps({"id": user_id})
+
+@app.route("/forgot-password", methods=["POST"])
+def forgot_pwd():
+    account = request.get_json(silent=True)
+    if not account or "email" not in account:
+        return json.dumps({"id": "", "error": "Missing email"}), 400
+    user_id = forgot_password(account["email"])
+    logger.info(f"Forgot Password: {account['email']} → id={user_id or 'FAILED'}")
+    return json.dumps({"id": user_id})
+
+@app.route("/email-verify", methods=["GET"])
+def email_verify():
+    id_token = request.args.get("id_token", "")
+    if not id_token:
+        return json.dumps({"id": "", "error": "Missing id token"}), 400
+    message = email_verify(id_token)
+    logger.info(f"Email Verify: {message}")
+    return json.dumps({"message": message})
 
 @app.route("/history", methods=["GET"])
 def get_history():

@@ -13,10 +13,11 @@ db = firebase.database()
 
 def retrieve_history(user_id):
     history = db.child("user").child(user_id).child("history").get()
-    if history.val() is None:
+    val = history.val()
+    if val is None:
         return []
     else:
-        return history.val()
+        return val
 
 
 def store_translation(user_id, translation):

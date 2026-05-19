@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import pyrebase
-import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -12,13 +11,11 @@ firebase_path = (
     else "firebase.json"
 )
 
-firebaseJSON = open(firebase_path)
-firebaseConfig = json.load(firebaseJSON)
+with open(firebase_path) as f:
+    firebaseConfig = json.load(f)
 
-# initialize firebase
 firebase = pyrebase.initialize_app(firebaseConfig)
-# access firebase authentication
-auth = firebase.auth()
+auth     = firebase.auth()
 
 
 def register_account(email, password):
@@ -28,6 +25,7 @@ def register_account(email, password):
     except Exception:
         logger.exception("Register failed")
         return ""
+
 
 def login_account(email, password):
     try:
@@ -40,8 +38,17 @@ def login_account(email, password):
 
 def forgot_password(email):
     try:
-        user = auth.send_password_reset_email(email)
+        auth.send_password_reset_email(email)
         return "Password reset email sent successfully."
     except Exception:
         logger.exception("Forgot password failed")
+        return ""
+
+
+def email_verify(id_token):
+    try:
+        auth.send_email_verification(id_token)
+        return "Email verification link sent successfully."
+    except Exception:
+        logger.exception("Email verification failed")
         return ""
