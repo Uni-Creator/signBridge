@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../providers/auth_provider.dart';
-import 'translate_screen.dart';
-import 'history_screen.dart';
-import 'login_screen.dart';
+import '../../auth/poviders/auth_provider.dart';
+import '../../translate/screens/translate_screen.dart';
+import '../../history/screens/history_screen.dart';
+import '../../auth/screens/login_screen.dart';
 
 class SignSightHome extends StatefulWidget {
   const SignSightHome({super.key});

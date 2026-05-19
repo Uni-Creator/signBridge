@@ -36,3 +36,12 @@ def login_account(email, password):
     except Exception:
         logger.exception("Login failed")
         return ""
+
+
+def forgot_password(email):
+    try:
+        user = auth.send_password_reset_email(email)
+        return "Password reset email sent successfully."
+    except Exception:
+        logger.exception("Forgot password failed")
+        return ""

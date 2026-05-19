@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:provider/provider.dart';
-import 'package:SignSight/providers/auth_provider.dart';
-import 'package:SignSight/providers/translation_provider.dart';
-import 'package:SignSight/screens/splash_screen.dart';
+import 'package:SignSight/features/auth/poviders/auth_provider.dart';
+import 'package:SignSight/features/translate/providers/translation_provider.dart';
+import 'package:SignSight/features/splash/screens/splash_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 void main() async {

@@ -7,9 +7,9 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:provider/provider.dart';
 import 'package:image/image.dart' as img;
 
-import '../providers/auth_provider.dart';
+import '../../auth/poviders/auth_provider.dart';
 import '../providers/translation_provider.dart';
-import '../services/websocket_service.dart';
+import '../../../core/services/websocket_service.dart';
 
 class TranslateScreen extends StatefulWidget {
   const TranslateScreen({super.key});

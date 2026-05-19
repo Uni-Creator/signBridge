@@ -29,6 +29,17 @@ class ApiService {
     return data['id'] ?? '';
   }
 
+  static Future<String> forgotPassword(String email) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/forgot-password'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'email': email}),
+    ).timeout(const Duration(seconds: 10));
+
+    final data = jsonDecode(response.body);
+    return data['id'] ?? '';
+  }
+
   static Future<List<String>> getHistory(String userId) async {
     final response = await http.get(
       Uri.parse('$baseUrl/history?id=$userId'),
