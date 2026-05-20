@@ -166,7 +166,7 @@ def forgot_pwd():
     if not account or "email" not in account:
         return json.dumps({"id": "", "error": "Missing email"}), 400
     user_id = forgot_password(account["email"])
-    logger.info(f"Forgot Password: {account['email']} → id={user_id or 'FAILED'}")
+    logger.info(f"Forgot Password: {account['email']} → reset={user_id or 'FAILED'}")
     return json.dumps({"id": user_id})
 
 @app.route("/email-verify", methods=["GET"])
@@ -324,7 +324,8 @@ def websocket_translate(ws):
                             f"total={result.get('total_latency_ms', 0):.0f}ms "
                             f"hf={result.get('inference_time_ms', 0):.0f}ms"
                         )
-                        if label and conf > 0.4:
+                        # if label and conf > 0.4:
+                        if label:
                             ws.send(json.dumps({"label": label, "confidence": conf}))
                             frame_buffer.clear()
                 except Exception as e:
