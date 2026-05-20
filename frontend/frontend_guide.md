@@ -31,6 +31,11 @@ const String baseUrl = 'http://10.0.2.2:5000';       // Android Emulator
 const String wsUrl  = 'ws://10.0.2.2:5000/ws';        // Android Emulator WebSocket
 ```
 
+```dart
+const String baseUrl = 'https://project.onrender.com';       // Render
+const String wsUrl  = 'wss://project.onrender.com/ws';        // Render WebSocket
+```
+
 > [!NOTE]
 > Use `10.0.2.2` to reach your local machine from an Android emulator.
 > For a physical device on the same Wi-Fi network, use your machine's local IP (e.g., `192.168.x.x`).
@@ -52,14 +57,27 @@ The app uses Firebase for authentication. You need to add your own Firebase conf
 2. Download `google-services.json`.
 3. Place it at:
    ```
-   frontend/android/app/google-services.json
+   backend/firebase.json
    ```
+4. The file should be in the same format as below (replace with your actual values):
+```firebase.json
+{
+  "apiKey": "YOUR_API_KEY",
+  "authDomain": "YOUR_AUTH_DOMAIN",
+  "databaseURL": "YOUR_DATABASE_URL",
+  "projectId": "YOUR_PROJECT_ID",
+  "storageBucket": "YOUR_STORAGE_BUCKET",
+  "messagingSenderId": "YOUR_SENDER_ID",
+  "appId": "YOUR_APP_ID"
+}
+
+```
 
 ### iOS
 1. Download `GoogleService-Info.plist` from the same Firebase project.
 2. Place it at:
    ```
-   frontend/ios/Runner/GoogleService-Info.plist
+   backend/firebase.plist
    ```
 
 ## 5. Run the App

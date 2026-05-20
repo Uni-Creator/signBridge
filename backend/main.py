@@ -3,19 +3,17 @@
 SignSight Backend - Flask + WebSocket Server
 ============================================
 Endpoints:
-  POST /register   → Firebase user registration
-  POST /login      → Firebase user login
-  GET  /history    → Retrieve translation history
-  POST /history    → Store a translation
-  WS   /ws         → Real-time sign detection
+  POST /register       → Firebase user registration
+  POST /login          → Firebase user login
+  POST /forgot-password → Send password reset email
+  GET  /history        → Retrieve translation history
+  POST /history        → Store a translation
+  WS   /ws             → Real-time sign detection
 """
-# import gevent.monkey
-# gevent.monkey.patch_all(ssl=False) 
-
+import os
 import base64
 import json
 import logging
-import os
 import time
 from collections import deque
 from io import BytesIO
@@ -28,36 +26,46 @@ from flask_cors import CORS
 from flask_sock import Sock
 from PIL import Image
 
-# MediaPipe (optional)
-mp_drawing      = None
-mp_vision       = None
-mp_python       = None
-MEDIAPIPE_OK    = False
+#  MediaPipe: only load if ENABLE_MEDIAPIPE=1 is set ─
+# On Render free tier (512MB), MediaPipe alone uses ~400MB — disable it there.
+# Set ENABLE_MEDIAPIPE=1 in Render env vars only if you upgrade to a paid plan.
+# Locally it loads fine.
+_ENABLE_MEDIAPIPE = os.environ.get("ENABLE_MEDIAPIPE", "0") == "1"
 
-try:
-    import mediapipe as mp
-    from mediapipe.tasks import python as mp_python
-    from mediapipe.tasks.python import vision as mp_vision
-    from mediapipe.framework.formats import landmark_pb2
-    mp_drawing   = mp.solutions.drawing_utils
-    MEDIAPIPE_OK = True
-except Exception as e:
-    print(f"MediaPipe init failed (landmarks disabled): {e}")
+mp_drawing   = None
+mp_vision    = None
+mp_python    = None
+MEDIAPIPE_OK = False
+
+if _ENABLE_MEDIAPIPE:
+    try:
+        import mediapipe as mp
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision as mp_vision
+        from mediapipe.framework.formats import landmark_pb2
+        mp_drawing   = mp.solutions.drawing_utils
+        MEDIAPIPE_OK = True
+        print("[MediaPipe] Loaded successfully.")
+    except Exception as e:
+        print(f"[MediaPipe] Init failed (landmarks disabled): {e}")
+else:
+    print("[MediaPipe] Disabled via ENABLE_MEDIAPIPE env var.")
 
 
 def build_landmarkers():
-    """Instantiate pose + hand landmarkers. Returns (pose, hand) or (None, None)."""
     if not MEDIAPIPE_OK:
         return None, None
     try:
         pose = mp_vision.PoseLandmarker.create_from_options(
             mp_vision.PoseLandmarkerOptions(
-                base_options=mp_python.BaseOptions(model_asset_path="pose_landmarker_full.task")
+                base_options=mp_python.BaseOptions(
+                    model_asset_path="pose_landmarker_full.task")
             )
         )
         hand = mp_vision.HandLandmarker.create_from_options(
             mp_vision.HandLandmarkerOptions(
-                base_options=mp_python.BaseOptions(model_asset_path="hand_landmarker.task"),
+                base_options=mp_python.BaseOptions(
+                    model_asset_path="hand_landmarker.task"),
                 num_hands=2,
             )
         )
@@ -68,7 +76,6 @@ def build_landmarkers():
 
 
 def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.Image:
-    """Overlay MediaPipe landmarks on a PIL RGB image. Returns annotated PIL image."""
     import mediapipe as mp
     from mediapipe.framework.formats import landmark_pb2
 
@@ -88,7 +95,8 @@ def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.I
         for lms in pose_result.pose_landmarks:
             proto = landmark_pb2.NormalizedLandmarkList()
             proto.landmark.extend([
-                landmark_pb2.NormalizedLandmark(x=l.x, y=l.y, z=l.z) for l in lms
+                landmark_pb2.NormalizedLandmark(x=l.x, y=l.y, z=l.z)
+                for l in lms
             ])
             mp_drawing.draw_landmarks(
                 img_bgr, proto,
@@ -100,7 +108,8 @@ def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.I
         for lms in hand_result.hand_landmarks:
             proto = landmark_pb2.NormalizedLandmarkList()
             proto.landmark.extend([
-                landmark_pb2.NormalizedLandmark(x=l.x, y=l.y, z=l.z) for l in lms
+                landmark_pb2.NormalizedLandmark(x=l.x, y=l.y, z=l.z)
+                for l in lms
             ])
             mp_drawing.draw_landmarks(
                 img_bgr, proto,
@@ -112,35 +121,38 @@ def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.I
     return Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
 
 
-# App setup 
+#  App setup 
 from authentication import register_account, login_account, forgot_password
 from history import retrieve_history, store_translation
 from model import ISLModelAPI
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 app  = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 sock = Sock(app)
 
-# Shared thread pool - 2 workers: one for inference, one for MediaPipe
-# Keep this small; more workers = more memory, not more throughput for a single GPU API
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-
-# Shared model API instance (session is reused across all WebSocket connections)
+executor  = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 model_api = ISLModelAPI(top_k=1)
 
-# Config
-CLIP_LENGTH  = 16
-FRAME_DELAY  = 0.08    # ~12.5 fps max ingest rate from Flutter
-RESIZE_DIM   = 224     # resize once here, skip redundant resize in backend_model
+CLIP_LENGTH = 16
+FRAME_DELAY = 0.08
+RESIZE_DIM  = 224
+
+# Wake up HF Space in background at startup
+import threading
+threading.Thread(target=model_api.check_health, daemon=True).start()
 
 
-# REST routes
+#  REST routes 
 @app.route("/")
 def index():
     return json.dumps({"message": "SignSight API is running", "version": "2.0"})
+
 
 @app.route("/register", methods=["POST"])
 def register():
@@ -151,6 +163,7 @@ def register():
     logger.info(f"Register: {account['email']} → id={user_id or 'FAILED'}")
     return json.dumps({"id": user_id})
 
+
 @app.route("/login", methods=["POST"])
 def login():
     account = request.get_json(silent=True)
@@ -160,23 +173,16 @@ def login():
     logger.info(f"Login: {account['email']} → id={user_id or 'FAILED'}")
     return json.dumps({"id": user_id})
 
+
 @app.route("/forgot-password", methods=["POST"])
 def forgot_pwd():
     account = request.get_json(silent=True)
     if not account or "email" not in account:
-        return json.dumps({"id": "", "error": "Missing email"}), 400
-    user_id = forgot_password(account["email"])
-    logger.info(f"Forgot Password: {account['email']} → reset={user_id or 'FAILED'}")
-    return json.dumps({"id": user_id})
+        return json.dumps({"success": False, "error": "Missing email"}), 400
+    success = forgot_password(account["email"])
+    logger.info(f"Forgot Password: {account['email']} → {success}")
+    return json.dumps({"success": success})
 
-@app.route("/email-verify", methods=["GET"])
-def email_verify():
-    id_token = request.args.get("id_token", "")
-    if not id_token:
-        return json.dumps({"id": "", "error": "Missing id token"}), 400
-    message = email_verify(id_token)
-    logger.info(f"Email Verify: {message}")
-    return json.dumps({"message": message})
 
 @app.route("/history", methods=["GET"])
 def get_history():
@@ -184,6 +190,7 @@ def get_history():
     if not user_id:
         return json.dumps({"history": [], "error": "Missing user id"}), 400
     return json.dumps({"history": retrieve_history(user_id)})
+
 
 @app.route("/history", methods=["POST"])
 def post_history():
@@ -194,7 +201,8 @@ def post_history():
         user_id     = body.get("id", "")
         translation = body.get("translation", "")
         if not user_id or not translation:
-            return json.dumps({"message": "error", "detail": "Missing id or translation"}), 400
+            return json.dumps(
+                {"message": "error", "detail": "Missing id or translation"}), 400
         store_translation(user_id, translation)
         return json.dumps({"message": "success"})
     except Exception as e:
@@ -202,36 +210,43 @@ def post_history():
         return json.dumps({"message": "error", "detail": str(e)}), 500
 
 
-# WebSocket
+#  WebSocket 
 @sock.route("/ws")
 def websocket_translate(ws):
     logger.info("WebSocket client connected")
     ws.send(json.dumps({"status": "connected", "message": "Ready for frames"}))
 
-    config = {"mode": "frames"}   # default to fastest path; Flutter can switch to "hybrid"
+    if not MEDIAPIPE_OK:
+        ws.send(json.dumps({
+            "status": "info",
+            "message": "Landmarks disabled on this server (memory limit). Accuracy may be lower."
+        }))
 
-    frame_buffer          = deque(maxlen=CLIP_LENGTH)
-    last_receive_time     = 0.0
+    config                 = {"mode": "frames"}
+    frame_buffer           = deque(maxlen=CLIP_LENGTH)
+    last_receive_time      = 0.0
     last_prediction_future = None
+    landmark_future        = None
 
-    # Build landmarkers per connection (they are not thread-safe to share)
     pose_detector, hand_detector = build_landmarkers()
     landmarks_enabled = pose_detector is not None and hand_detector is not None
 
     if not model_api.check_health():
-        ws.send(json.dumps({"status": "api_warming", "message": "Model API warming up, please wait..."}))
+        ws.send(json.dumps({
+            "status": "api_warming",
+            "message": "Model API warming up, please wait..."
+        }))
         logger.warning("Remote model API not ready — predictions may fail.")
     else:
         logger.info("Remote model API healthy.")
 
     def _run_inference(frames: list, mode: str) -> dict:
-        """Runs in the thread pool. Never touches the WebSocket."""
         t0 = time.time()
         if mode == "frames":
             res = model_api.predict_from_frames(frames)
         elif mode == "video":
             res = model_api.predict(frames)
-        else:  # hybrid
+        else:
             res = model_api.predict_from_frames(frames)
             if "error" in res:
                 logger.warning("Hybrid: frames path failed, falling back to video")
@@ -240,15 +255,11 @@ def websocket_translate(ws):
         return res
 
     def _apply_landmarks_async(raw_image: Image.Image) -> Image.Image:
-        """Runs MediaPipe in thread pool so it doesn't block frame ingestion."""
         if landmarks_enabled:
             return apply_landmarks(raw_image, pose_detector, hand_detector)
         return raw_image
 
     try:
-        # Keep a future for landmark processing so we can overlap it with buffer management
-        landmark_future = None
-
         while True:
             message = ws.receive(timeout=30)
             if not message:
@@ -261,7 +272,8 @@ def websocket_translate(ws):
                     new_mode = data.get("mode")
                     if new_mode in ("frames", "video", "hybrid"):
                         config["mode"] = new_mode
-                        ws.send(json.dumps({"status": "config_updated", "mode": new_mode}))
+                        ws.send(json.dumps(
+                            {"status": "config_updated", "mode": new_mode}))
                         logger.info(f"Inference mode → {new_mode}")
                     continue
             except Exception:
@@ -274,7 +286,6 @@ def websocket_translate(ws):
             last_receive_time = now
 
             # Decode frame
-            t0 = time.time()
             try:
                 data      = json.loads(message)
                 b64       = data.get("frame", "")
@@ -287,30 +298,19 @@ def websocket_translate(ws):
                 ws.send(json.dumps({"error": "Invalid frame"}))
                 continue
 
-            t_decode = time.time()
-
-            # MediaPipe landmark overlay (async, non-blocking)
-            # We don't wait for the previous landmark future here 
-            # we collect the *previous* frame's result while the current one processes.
-            # This keeps landmark processing off the critical path.
+            # Collect previous landmark result
             if landmark_future is not None and landmark_future.done():
                 try:
                     processed_image = landmark_future.result()
-                    # Resize after landmarks so drawing coords are correct
-                    frame_buffer.append(processed_image.resize((RESIZE_DIM, RESIZE_DIM)))
+                    frame_buffer.append(
+                        processed_image.resize((RESIZE_DIM, RESIZE_DIM)))
                 except Exception as e:
                     logger.warning(f"Landmark future error: {e}")
 
-            # Submit current frame's landmark processing
+            # Submit landmark processing for current frame
             landmark_future = executor.submit(_apply_landmarks_async, raw_image)
 
-            t_process = time.time()
-            logger.debug(
-                f"[Latency] decode={((t_decode-t0)*1000):.1f}ms  "
-                f"landmark_submit={((t_process-t_decode)*1000):.1f}ms"
-            )
-
-            # Collect completed inference result 
+            # Collect completed inference result
             if last_prediction_future is not None and last_prediction_future.done():
                 try:
                     result = last_prediction_future.result()
@@ -324,18 +324,19 @@ def websocket_translate(ws):
                             f"total={result.get('total_latency_ms', 0):.0f}ms "
                             f"hf={result.get('inference_time_ms', 0):.0f}ms"
                         )
-                        # if label and conf > 0.4:
                         if label:
-                            ws.send(json.dumps({"label": label, "confidence": conf}))
+                            ws.send(json.dumps(
+                                {"label": label, "confidence": conf}))
                             frame_buffer.clear()
                 except Exception as e:
                     logger.error(f"Inference result error: {e}")
                 last_prediction_future = None
 
-            # Dispatch new inference when buffer is full 
+            # Dispatch inference when buffer full
             if len(frame_buffer) == CLIP_LENGTH and last_prediction_future is None:
-                frames_copy           = list(frame_buffer)
-                last_prediction_future = executor.submit(_run_inference, frames_copy, config["mode"])
+                frames_copy            = list(frame_buffer)
+                last_prediction_future = executor.submit(
+                    _run_inference, frames_copy, config["mode"])
 
     except Exception as e:
         logger.warning(f"WebSocket closed: {e}")
@@ -347,7 +348,7 @@ def websocket_translate(ws):
         logger.info("WebSocket client disconnected")
 
 
-# Entry point 
+#  Entry point 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"\n{'='*60}")
