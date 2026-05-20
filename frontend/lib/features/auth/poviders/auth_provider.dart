@@ -14,8 +14,10 @@ class AuthProvider extends ChangeNotifier {
   String? get error => _error;
   bool get isLoggedIn => _userId != null && _userId!.isNotEmpty;
 
+  late final Future<void> initialization;
+
   AuthProvider() {
-    _loadSession();
+    initialization = _loadSession();
   }
 
   Future<void> _loadSession() async {

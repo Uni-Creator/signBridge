@@ -38,6 +38,8 @@ class _SplashScreenState extends State<SplashScreen>
   Future<void> _navigate() async {
     if (!mounted) return;
     final auth = context.read<AuthProvider>();
+    await auth.initialization;
+    if (!mounted) return;
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         pageBuilder: (_, __, ___) =>

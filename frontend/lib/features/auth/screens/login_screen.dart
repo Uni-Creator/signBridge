@@ -35,6 +35,16 @@ class _LoginScreenState extends State<LoginScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final auth = context.read<AuthProvider>();
+      await auth.initialization;
+      if (auth.isLoggedIn && mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const SignSightHome()),
+        );
+      }
+    });
+
     _bgController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 10),

@@ -36,6 +36,17 @@ class _RegisterScreenState extends State<RegisterScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final auth = context.read<AuthProvider>();
+      await auth.initialization;
+      if (auth.isLoggedIn && mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const SignSightHome()),
+          (route) => false,
+        );
+      }
+    });
+
     _bgController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 10),

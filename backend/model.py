@@ -54,7 +54,7 @@ class ISLModelAPI:
 
         for attempt in range(2):
             try:
-                r = self.session.post(self.predict_frames_url, json=payload, timeout=10)
+                r = self.session.post(self.predict_frames_url, json=payload, timeout=15)
                 if r.status_code == 200:
                     return r.json()
                 if r.status_code == 503:
