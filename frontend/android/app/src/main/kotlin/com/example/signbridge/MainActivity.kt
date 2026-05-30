@@ -1,4 +1,4 @@
-package com.example.signsight
+package com.example.signbridge
 
 import io.flutter.embedding.android.FlutterActivity
 

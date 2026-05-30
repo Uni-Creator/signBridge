@@ -1,6 +1,6 @@
 # main.py
 """
-SignSight Backend - Flask + WebSocket Server
+SignBridge Backend - Flask + WebSocket Server
 ============================================
 Endpoints:
   POST /register       → Firebase user registration
@@ -54,6 +54,7 @@ else:
 
 def build_landmarkers():
     if not MEDIAPIPE_OK:
+        logger.info("MediaPipe not available. Landmarks will be disabled.")
         return None, None
     try:
         pose = mp_vision.PoseLandmarker.create_from_options(
@@ -145,13 +146,13 @@ RESIZE_DIM  = 224
 
 # Wake up HF Space in background at startup
 import threading
-threading.Thread(target=model_api.check_health, daemon=True).start()
+threading.Thread(target=model_api._warmup, daemon=True).start()
 
 
 #  REST routes 
 @app.route("/")
 def index():
-    return json.dumps({"message": "SignSight API is running", "version": "2.0"})
+    return json.dumps({"message": "SignBridge API is running", "version": "2.0"})
 
 
 @app.route("/register", methods=["POST"])
@@ -352,7 +353,7 @@ def websocket_translate(ws):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"\n{'='*60}")
-    print(f"  SignSight Backend  →  http://0.0.0.0:{port}/")
+    print(f"  SignBridge Backend  →  http://0.0.0.0:{port}/")
     print(f"  WebSocket         →  ws://0.0.0.0:{port}/ws")
     print(f"  Android emulator  →  use 10.0.2.2 instead of localhost")
     print(f"{'='*60}\n")

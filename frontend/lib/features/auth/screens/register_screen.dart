@@ -41,7 +41,7 @@ class _RegisterScreenState extends State<RegisterScreen>
       await auth.initialization;
       if (auth.isLoggedIn && mounted) {
         Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const SignSightHome()),
+          MaterialPageRoute(builder: (_) => const SignBridgeHome()),
           (route) => false,
         );
       }
@@ -81,7 +81,7 @@ class _RegisterScreenState extends State<RegisterScreen>
     if (!mounted) return;
     if (success) {
       Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const SignSightHome()),
+        MaterialPageRoute(builder: (_) => const SignBridgeHome()),
         (route) => false,
       );
     }

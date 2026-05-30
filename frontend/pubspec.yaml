@@ -1,5 +1,5 @@
-name: SignSight
-description: "SignSight - Real-time Sign Language Translation App"
+name: SignBridge
+description: "SignBridge - Real-time Sign Language Translation App"
 publish_to: 'none'
 
 version: 1.0.0+1

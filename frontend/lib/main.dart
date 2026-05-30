@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:provider/provider.dart';
-import 'package:SignSight/features/auth/poviders/auth_provider.dart';
-import 'package:SignSight/features/translate/providers/translation_provider.dart';
-import 'package:SignSight/features/splash/screens/splash_screen.dart';
+import 'package:SignBridge/features/auth/poviders/auth_provider.dart';
+import 'package:SignBridge/features/translate/providers/translation_provider.dart';
+import 'package:SignBridge/features/splash/screens/splash_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 void main() async {
@@ -29,7 +29,7 @@ class MyApp extends StatelessWidget {
         builder: (context, child) {
           return MaterialApp(
             debugShowCheckedModeBanner: false,
-            title: 'SignSight',
+            title: 'SignBridge',
             theme: ThemeData(
               colorScheme: ColorScheme.fromSeed(
                 seedColor: const Color(0xFF2B2D5D),

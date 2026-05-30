@@ -1,4 +1,4 @@
-# How to Run the SignSight Backend
+# How to Run the SignBridge Backend
 
 Follow these steps to set up and start the Python/Flask backend server.
 

@@ -1,7 +1,7 @@
-# signSight
+# signBridge
 
-![GitHub Repo stars](https://img.shields.io/github/stars/Uni-Creator/signSight?style=social)
-![GitHub forks](https://img.shields.io/github/forks/Uni-Creator/signSight?style=social)
+![GitHub Repo stars](https://img.shields.io/github/stars/Uni-Creator/signBridge?style=social)
+![GitHub forks](https://img.shields.io/github/forks/Uni-Creator/signBridge?style=social)
 ![Accuracy](https://img.shields.io/badge/Top--1%20Accuracy-66.84%25-blue)
 ![Classes](https://img.shields.io/badge/ISL%20Classes-76-green)
 ![Model](https://img.shields.io/badge/Backbone-Swin3D--S-orange)
@@ -189,8 +189,8 @@ The FastAPI backend exposes:
 ### Backend Setup
 
 ```bash
-git clone https://github.com/Uni-Creator/signSight.git
-cd signSight
+git clone https://github.com/Uni-Creator/signBridge.git
+cd signBridge
 
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
@@ -262,8 +262,8 @@ Display + TTS
 
 ## Contributors
 
-<a href="https://github.com/Uni-Creator/signSight/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=Uni-Creator/signSight" />
+<a href="https://github.com/Uni-Creator/signBridge/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Uni-Creator/signBridge" />
 </a>
 
 ---

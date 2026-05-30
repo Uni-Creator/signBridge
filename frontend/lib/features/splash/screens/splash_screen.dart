@@ -43,7 +43,7 @@ class _SplashScreenState extends State<SplashScreen>
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         pageBuilder: (_, __, ___) =>
-            auth.isLoggedIn ? const SignSightHome() : const LoginScreen(),
+            auth.isLoggedIn ? const SignBridgeHome() : const LoginScreen(),
         transitionDuration: const Duration(milliseconds: 600),
         transitionsBuilder: (_, anim, __, child) =>
             FadeTransition(opacity: anim, child: child),
@@ -84,7 +84,7 @@ class _SplashScreenState extends State<SplashScreen>
                 ),
                 const SizedBox(height: 24),
                 const Text(
-                  'SignSight',
+                  'SignBridge',
                   style: TextStyle(
                     fontSize: 36,
                     fontWeight: FontWeight.bold,

@@ -5,14 +5,14 @@ import '../../translate/screens/translate_screen.dart';
 import '../../history/screens/history_screen.dart';
 import '../../auth/screens/login_screen.dart';
 
-class SignSightHome extends StatefulWidget {
-  const SignSightHome({super.key});
+class SignBridgeHome extends StatefulWidget {
+  const SignBridgeHome({super.key});
 
   @override
-  State<SignSightHome> createState() => _SignSightHomeState();
+  State<SignBridgeHome> createState() => _SignBridgeHomeState();
 }
 
-class _SignSightHomeState extends State<SignSightHome>
+class _SignBridgeHomeState extends State<SignBridgeHome>
     with TickerProviderStateMixin {
   int _selectedIndex = 0;
   late AnimationController _fadeCtrl;
@@ -156,7 +156,7 @@ class _HomeTab extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             const Text(
-              'SignSight',
+              'SignBridge',
               style: TextStyle(
                   color: Colors.white,
                   fontWeight: FontWeight.bold,
@@ -286,7 +286,7 @@ class _HomeTab extends StatelessWidget {
                             ),
                             onPressed: () {
                               final home = context.findAncestorStateOfType<
-                                  _SignSightHomeState>();
+                                  _SignBridgeHomeState>();
                               home?._onNavTap(1);
                             },
                             icon: const Icon(Icons.camera_alt, size: 18),
@@ -356,7 +356,7 @@ class _HomeTab extends StatelessWidget {
                             ),
                             onPressed: () {
                               final home = context.findAncestorStateOfType<
-                                  _SignSightHomeState>();
+                                  _SignBridgeHomeState>();
                               home?._onNavTap(1);
                             },
                             icon: const Icon(Icons.camera_alt, size: 18),
@@ -376,7 +376,7 @@ class _HomeTab extends StatelessWidget {
                             ),
                             onPressed: () {
                               final home = context.findAncestorStateOfType<
-                                  _SignSightHomeState>();
+                                  _SignBridgeHomeState>();
                               home?._onNavTap(2);
                             },
                             icon: const Icon(Icons.history,

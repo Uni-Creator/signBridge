@@ -1,4 +1,4 @@
-# How to Run the SignSight Frontend
+# How to Run the SignBridge Frontend
 
 Follow these steps to set up and launch the Flutter mobile application.
 
@@ -124,6 +124,6 @@ On first launch, accept the permission prompts when asked.
 |---|---|
 | `flutter doctor` shows missing dependencies | Follow the recommended fixes in the output |
 | App cannot reach the backend | Confirm the backend is running and the URL/IP in the config is correct |
-| Camera permission denied | Manually grant camera access in device Settings → Apps → signSight |
+| Camera permission denied | Manually grant camera access in device Settings → Apps → signBridge |
 | Build fails on Android | Run `flutter clean` then `flutter pub get` and try again |
 | Emulator connection refused | Ensure the backend is bound to `0.0.0.0` (not just `127.0.0.1`) |

@@ -1,4 +1,4 @@
-import 'package:SignSight/features/auth/screens/forgot_password_screen.dart';
+import 'package:SignBridge/features/auth/screens/forgot_password_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../poviders/auth_provider.dart';
@@ -40,7 +40,7 @@ class _LoginScreenState extends State<LoginScreen>
       await auth.initialization;
       if (auth.isLoggedIn && mounted) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const SignSightHome()),
+          MaterialPageRoute(builder: (_) => const SignBridgeHome()),
         );
       }
     });
@@ -77,7 +77,7 @@ class _LoginScreenState extends State<LoginScreen>
     if (!mounted) return;
     if (success) {
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const SignSightHome()),
+        MaterialPageRoute(builder: (_) => const SignBridgeHome()),
       );
     }
   }
@@ -135,7 +135,7 @@ class _LoginScreenState extends State<LoginScreen>
                           ),
                           const SizedBox(width: 12),
                           const Text(
-                            'SignSight',
+                            'SignBridge',
                             style: TextStyle(
                               fontSize: 22,
                               fontWeight: FontWeight.w700,
@@ -424,7 +424,7 @@ class _LoginScreenState extends State<LoginScreen>
                           onPressed: () =>
                               Navigator.of(context).pushReplacement(
                             MaterialPageRoute(
-                                builder: (_) => const SignSightHome()),
+                                builder: (_) => const SignBridgeHome()),
                           ),
                           child: Text(
                             'Continue as Guest',
