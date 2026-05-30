@@ -91,11 +91,12 @@ class _LoginScreenState extends State<LoginScreen>
       body: Stack(
         children: [
           // Subtle animated orbs in the background
-          AnimatedBuilder(
-            animation: _bgController,
-            builder: (_, __) => CustomPaint(
-              size: MediaQuery.of(context).size,
-              painter: _BgPainter(_bgController.value),
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _bgController,
+              builder: (_, __) => CustomPaint(
+                painter: _BgPainter(_bgController.value),
+              ),
             ),
           ),
 
@@ -580,8 +581,7 @@ class _BgPainter extends CustomPainter {
         ..shader = RadialGradient(
           colors: [orb.color, orb.color.withOpacity(0)],
         ).createShader(Rect.fromCircle(
-            center: Offset(orb.cx, orb.cy), radius: orb.r))
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 30);
+            center: Offset(orb.cx, orb.cy), radius: orb.r));
       canvas.drawCircle(Offset(orb.cx, orb.cy), orb.r, paint);
     }
   }

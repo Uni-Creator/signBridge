@@ -146,7 +146,7 @@ RESIZE_DIM  = 224
 
 # Wake up HF Space in background at startup
 import threading
-threading.Thread(target=model_api._warmup, daemon=True).start()
+threading.Thread(target=model_api.check_health, daemon=True).start()
 
 
 #  REST routes 
