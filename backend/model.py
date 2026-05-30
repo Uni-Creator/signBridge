@@ -48,8 +48,10 @@ class ISLModelAPI:
             # quality=80 is a good tradeoff: ~30% smaller payload vs 85, imperceptible quality loss
             frame.save(buf, format="JPEG", quality=80)
             encoded.append(base64.b64encode(buf.getvalue()).decode())
+            buf.close()  # explicitly release BytesIO buffer
 
         payload  = {"frames": encoded, "top_k": self.top_k}
+        del encoded  # payload holds the only reference now; free the list
         last_err = "Unknown error"
 
         for attempt in range(2):

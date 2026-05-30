@@ -12,6 +12,7 @@ Endpoints:
 """
 import os
 import base64
+import gc
 import json
 import logging
 import time
@@ -88,9 +89,11 @@ def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.I
 
     if (not pose_result or not pose_result.pose_landmarks) and \
        (not hand_result or not hand_result.hand_landmarks):
+        del img_rgb, mp_image
         return image
 
     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    del img_rgb, mp_image  # free originals immediately after conversion
 
     if pose_result and pose_result.pose_landmarks:
         for lms in pose_result.pose_landmarks:
@@ -119,7 +122,9 @@ def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.I
                 mp.solutions.drawing_styles.get_default_hand_connections_style(),
             )
 
-    return Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+    result_image = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+    del img_bgr
+    return result_image
 
 
 #  App setup 
@@ -228,6 +233,7 @@ def websocket_translate(ws):
     last_receive_time      = 0.0
     last_prediction_future = None
     landmark_future        = None
+    frame_count            = 0  # for periodic GC
 
     pose_detector, hand_detector = build_landmarkers()
     landmarks_enabled = pose_detector is not None and hand_detector is not None
@@ -243,22 +249,30 @@ def websocket_translate(ws):
 
     def _run_inference(frames: list, mode: str) -> dict:
         t0 = time.time()
-        if mode == "frames":
-            res = model_api.predict_from_frames(frames)
-        elif mode == "video":
-            res = model_api.predict(frames)
-        else:
-            res = model_api.predict_from_frames(frames)
-            if "error" in res:
-                logger.warning("Hybrid: frames path failed, falling back to video")
+        try:
+            if mode == "frames":
+                res = model_api.predict_from_frames(frames)
+            elif mode == "video":
                 res = model_api.predict(frames)
-        res["total_latency_ms"] = round((time.time() - t0) * 1000, 2)
+            else:
+                res = model_api.predict_from_frames(frames)
+                if "error" in res:
+                    logger.warning("Hybrid: frames path failed, falling back to video")
+                    res = model_api.predict(frames)
+            res["total_latency_ms"] = round((time.time() - t0) * 1000, 2)
+        finally:
+            # Always release the frames list passed into this thread
+            del frames
         return res
 
     def _apply_landmarks_async(raw_image: Image.Image) -> Image.Image:
-        if landmarks_enabled:
-            return apply_landmarks(raw_image, pose_detector, hand_detector)
-        return raw_image
+        try:
+            if landmarks_enabled:
+                return apply_landmarks(raw_image, pose_detector, hand_detector)
+            return raw_image
+        finally:
+            # Release the input image reference held by this thread
+            del raw_image
 
     try:
         while True:
@@ -294,22 +308,29 @@ def websocket_translate(ws):
                     continue
                 img_bytes = base64.b64decode(b64)
                 raw_image = Image.open(BytesIO(img_bytes)).convert("RGB")
+                del img_bytes  # decoded — original bytes no longer needed
             except Exception as e:
                 logger.warning(f"Frame decode error: {e}")
                 ws.send(json.dumps({"error": "Invalid frame"}))
                 continue
 
+            frame_count += 1
+
             # Collect previous landmark result
             if landmark_future is not None and landmark_future.done():
                 try:
                     processed_image = landmark_future.result()
-                    frame_buffer.append(
-                        processed_image.resize((RESIZE_DIM, RESIZE_DIM)))
+                    resized = processed_image.resize((RESIZE_DIM, RESIZE_DIM))
+                    del processed_image  # full-size annotated frame no longer needed
+                    frame_buffer.append(resized)
                 except Exception as e:
                     logger.warning(f"Landmark future error: {e}")
+                landmark_future = None  # release future reference
 
             # Submit landmark processing for current frame
+            # raw_image ownership transfers to the thread; we del our reference
             landmark_future = executor.submit(_apply_landmarks_async, raw_image)
+            del raw_image  # thread has it now; drop main-thread reference
 
             # Collect completed inference result
             if last_prediction_future is not None and last_prediction_future.done():
@@ -331,13 +352,19 @@ def websocket_translate(ws):
                             frame_buffer.clear()
                 except Exception as e:
                     logger.error(f"Inference result error: {e}")
-                last_prediction_future = None
+                last_prediction_future = None  # release future + its frame refs
 
             # Dispatch inference when buffer full
             if len(frame_buffer) == CLIP_LENGTH and last_prediction_future is None:
                 frames_copy            = list(frame_buffer)
+                frame_buffer.clear()  # don't hold two copies simultaneously
                 last_prediction_future = executor.submit(
                     _run_inference, frames_copy, config["mode"])
+                del frames_copy  # thread has it now
+
+            # Periodic GC every 100 frames to catch any lingering numpy/PIL refs
+            if frame_count % 100 == 0:
+                gc.collect()
 
     except Exception as e:
         logger.warning(f"WebSocket closed: {e}")
