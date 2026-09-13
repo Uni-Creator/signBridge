@@ -23,7 +23,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   void _loadHistory() {
     final auth = context.read<AuthProvider>();
     final userId = auth.userId ?? 'guest';
-    context.read<TranslationProvider>().loadHistory(userId);
+    context.read<TranslationProvider>().loadHistory(userId, token: auth.token);
   }
 
   @override

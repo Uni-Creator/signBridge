@@ -4,11 +4,13 @@ import '../../../core/services/api_service.dart';
 
 class AuthProvider extends ChangeNotifier {
   String? _userId;
+  String? _token;
   String? _email;
   bool _isLoading = false;
   String? _error;
 
   String? get userId => _userId;
+  String? get token => _token;
   String? get email => _email;
   bool get isLoading => _isLoading;
   String? get error => _error;
@@ -23,6 +25,7 @@ class AuthProvider extends ChangeNotifier {
   Future<void> _loadSession() async {
     final prefs = await SharedPreferences.getInstance();
     _userId = prefs.getString('userId');
+    _token = prefs.getString('token');
     _email = prefs.getString('email');
     notifyListeners();
   }
@@ -33,12 +36,16 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final userId = await ApiService.login(email, password);
+      final authData = await ApiService.login(email, password);
+      final userId = authData['id'] ?? '';
+      final token = authData['token'] ?? '';
       if (userId.isNotEmpty) {
         _userId = userId;
+        _token = token;
         _email = email;
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('userId', userId);
+        if (token.isNotEmpty) await prefs.setString('token', token);
         await prefs.setString('email', email);
         _isLoading = false;
         notifyListeners();
@@ -61,12 +68,16 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final userId = await ApiService.register(email, password);
+      final authData = await ApiService.register(email, password);
+      final userId = authData['id'] ?? '';
+      final token = authData['token'] ?? '';
       if (userId.isNotEmpty) {
         _userId = userId;
+        _token = token;
         _email = email;
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('userId', userId);
+        if (token.isNotEmpty) await prefs.setString('token', token);
         await prefs.setString('email', email);
         _isLoading = false;
         notifyListeners();
@@ -91,19 +102,13 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final userId = await ApiService.forgotPassword(email);
-      if (userId.isNotEmpty) {
-        _userId = userId;
-        _email = email;
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('userId', userId);
-        await prefs.setString('email', email);
+      final resId = await ApiService.forgotPassword(email);
+      if (resId.isNotEmpty) {
         _isLoading = false;
         notifyListeners();
         return true;
       } else {
-        debugPrint(userId);
-        _error = 'Registration failed. Email may already be in use.';
+        _error = 'Password reset failed.';
       }
     } catch (e) {
       debugPrint(e.toString());
@@ -117,9 +122,11 @@ class AuthProvider extends ChangeNotifier {
 
   Future<void> logout() async {
     _userId = null;
+    _token = null;
     _email = null;
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('userId');
+    await prefs.remove('token');
     await prefs.remove('email');
     notifyListeners();
   }

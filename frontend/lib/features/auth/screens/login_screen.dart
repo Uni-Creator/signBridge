@@ -14,7 +14,7 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
@@ -35,6 +35,8 @@ class _LoginScreenState extends State<LoginScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final auth = context.read<AuthProvider>();
       await auth.initialization;
@@ -47,7 +49,7 @@ class _LoginScreenState extends State<LoginScreen>
 
     _bgController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 10),
+      duration: const Duration(seconds: 20),
     )..repeat(reverse: true);
 
     _cardController = AnimationController(
@@ -62,7 +64,21 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    final bottomInset = WidgetsBinding.instance.platformDispatcher.views.first.viewInsets.bottom;
+    if (bottomInset > 0) {
+      _bgController.stop();
+    } else {
+      if (!_bgController.isAnimating) {
+        _bgController.repeat(reverse: true);
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _emailCtrl.dispose();
     _passCtrl.dispose();
     _bgController.dispose();
@@ -92,10 +108,14 @@ class _LoginScreenState extends State<LoginScreen>
         children: [
           // Subtle animated orbs in the background
           Positioned.fill(
-            child: AnimatedBuilder(
-              animation: _bgController,
-              builder: (_, __) => CustomPaint(
-                painter: _BgPainter(_bgController.value),
+            child: RepaintBoundary(
+              child: AnimatedBuilder(
+                animation: _bgController,
+                builder: (_, __) => CustomPaint(
+                  isComplex: true,
+                  willChange: true,
+                  painter: _BgPainter(_bgController.value),
+                ),
               ),
             ),
           ),

@@ -21,19 +21,19 @@ auth     = firebase.auth()
 def register_account(email, password):
     try:
         user = auth.create_user_with_email_and_password(email, password)
-        return user["localId"]
+        return {"id": user["localId"], "token": user["idToken"]}
     except Exception:
         logger.exception("Register failed")
-        return ""
+        return None
 
 
 def login_account(email, password):
     try:
         login = auth.sign_in_with_email_and_password(email, password)
-        return login["localId"]
+        return {"id": login["localId"], "token": login["idToken"]}
     except Exception:
         logger.exception("Login failed")
-        return ""
+        return None
 
 
 def forgot_password(email):

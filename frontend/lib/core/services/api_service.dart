@@ -7,7 +7,7 @@ class ApiService {
   // Use 10.0.2.2 for Android emulator
   static String get baseUrl => dotenv.env['API_BASE_URL']!;
 
-  static Future<String> login(String email, String password) async {
+  static Future<Map<String, String>> login(String email, String password) async {
     final response = await http.post(
       Uri.parse('$baseUrl/login'),
       headers: {'Content-Type': 'application/json'},
@@ -15,10 +15,13 @@ class ApiService {
     ).timeout(const Duration(seconds: 10));
 
     final data = jsonDecode(response.body);
-    return data['id'] ?? '';
+    return {
+      'id': data['id']?.toString() ?? '',
+      'token': data['token']?.toString() ?? '',
+    };
   }
 
-  static Future<String> register(String email, String password) async {
+  static Future<Map<String, String>> register(String email, String password) async {
     final response = await http.post(
       Uri.parse('$baseUrl/register'),
       headers: {'Content-Type': 'application/json'},
@@ -26,7 +29,10 @@ class ApiService {
     ).timeout(const Duration(seconds: 10));
 
     final data = jsonDecode(response.body);
-    return data['id'] ?? '';
+    return {
+      'id': data['id']?.toString() ?? '',
+      'token': data['token']?.toString() ?? '',
+    };
   }
 
   static Future<String> forgotPassword(String email) async {
@@ -40,10 +46,13 @@ class ApiService {
     return data['id'] ?? '';
   }
 
-  static Future<List<String>> getHistory(String userId) async {
+  static Future<List<String>> getHistory(String userId, String token) async {
     final response = await http.get(
       Uri.parse('$baseUrl/history?id=$userId'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
     ).timeout(const Duration(seconds: 10));
 
     final data = jsonDecode(response.body);
@@ -52,10 +61,13 @@ class ApiService {
     return [];
   }
 
-  static Future<void> postHistory(String userId, String translation) async {
+  static Future<void> postHistory(String userId, String translation, String token) async {
     await http.post(
       Uri.parse('$baseUrl/history'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
       body: jsonEncode({'id': userId, 'translation': translation}),
     ).timeout(const Duration(seconds: 10));
   }

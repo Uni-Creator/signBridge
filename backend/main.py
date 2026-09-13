@@ -27,6 +27,7 @@ from flask_cors import CORS
 from flask_sock import Sock
 from PIL import Image
 
+
 #  MediaPipe: only load if ENABLE_MEDIAPIPE=1 is set ─
 # On Render free tier (512MB), MediaPipe alone uses ~400MB — disable it there.
 # Set ENABLE_MEDIAPIPE=1 in Render env vars only if you upgrade to a paid plan.
@@ -131,6 +132,10 @@ def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.I
 from authentication import register_account, login_account, forgot_password
 from history import retrieve_history, store_translation
 from model import ISLModelAPI
+from firebase_admin import auth as admin_auth
+from functools import wraps
+from flask import request, jsonify
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,7 +144,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app  = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+allowed_origins_str = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000,app://signbridge"
+)
+allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
+CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
 sock = Sock(app)
 
 executor  = concurrent.futures.ThreadPoolExecutor(max_workers=2)
@@ -154,6 +164,23 @@ import threading
 threading.Thread(target=model_api.check_health, daemon=True).start()
 
 
+def require_auth(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Missing or invalid token"}), 401
+        try:
+            decoded = admin_auth.verify_id_token(auth_header.split(" ", 1)[1])
+        except admin_auth.ExpiredIdTokenError:
+            return jsonify({"error": "Token expired"}), 401
+        except Exception:
+            return jsonify({"error": "Invalid token"}), 401
+        request.user_id = decoded["uid"]
+        return f(*args, **kwargs)
+    return wrapper
+
+
 #  REST routes 
 @app.route("/")
 def index():
@@ -164,20 +191,24 @@ def index():
 def register():
     account = request.get_json(silent=True)
     if not account or "email" not in account or "password" not in account:
-        return json.dumps({"id": "", "error": "Missing email or password"}), 400
-    user_id = register_account(account["email"], account["password"])
-    logger.info(f"Register: {account['email']} → id={user_id or 'FAILED'}")
-    return json.dumps({"id": user_id})
+        return json.dumps({"id": "", "token": "", "error": "Missing email or password"}), 400
+    res = register_account(account["email"], account["password"])
+    if not res:
+        return json.dumps({"id": "", "token": "", "error": "Registration failed"}), 400
+    logger.info(f"Register: {account['email']} → id={res['id']}")
+    return json.dumps(res)
 
 
 @app.route("/login", methods=["POST"])
 def login():
     account = request.get_json(silent=True)
     if not account or "email" not in account or "password" not in account:
-        return json.dumps({"id": "", "error": "Missing email or password"}), 400
-    user_id = login_account(account["email"], account["password"])
-    logger.info(f"Login: {account['email']} → id={user_id or 'FAILED'}")
-    return json.dumps({"id": user_id})
+        return json.dumps({"id": "", "token": "", "error": "Missing email or password"}), 400
+    res = login_account(account["email"], account["password"])
+    if not res:
+        return json.dumps({"id": "", "token": "", "error": "Login failed"}), 400
+    logger.info(f"Login: {account['email']} → id={res['id']}")
+    return json.dumps(res)
 
 
 @app.route("/forgot-password", methods=["POST"])
@@ -191,6 +222,7 @@ def forgot_pwd():
 
 
 @app.route("/history", methods=["GET"])
+@require_auth
 def get_history():
     user_id = request.args.get("id", "")
     if not user_id:
@@ -199,12 +231,13 @@ def get_history():
 
 
 @app.route("/history", methods=["POST"])
+@require_auth
 def post_history():
     try:
         body = request.get_json(silent=True)
         if not body:
             return json.dumps({"message": "error", "detail": "No JSON body"}), 400
-        user_id     = body.get("id", "")
+        user_id     = request.user_id
         translation = body.get("translation", "")
         if not user_id or not translation:
             return json.dumps(
@@ -219,7 +252,15 @@ def post_history():
 #  WebSocket 
 @sock.route("/ws")
 def websocket_translate(ws):
-    logger.info("WebSocket client connected")
+    token = request.args.get("token", "")
+    try:
+        decoded = admin_auth.verify_id_token(token)
+        user_id = decoded["uid"]
+    except Exception:
+        ws.send(json.dumps({"error": "Unauthorized"}))
+        ws.close()
+        return
+    logger.info(f"WebSocket client connected: {user_id}")
     ws.send(json.dumps({"status": "connected", "message": "Ready for frames"}))
 
     if not MEDIAPIPE_OK:

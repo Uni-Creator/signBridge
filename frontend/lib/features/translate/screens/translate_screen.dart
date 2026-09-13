@@ -51,7 +51,10 @@ class _TranslateScreenState extends State<TranslateScreen>
     _initTts();
     _loadCameras();
     _setupWebSocket();
-    _wsService.connect();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final token = context.read<AuthProvider>().token ?? '';
+      _wsService.connect(token);
+    });
   }
 
   void _initTts() async {
@@ -229,7 +232,8 @@ class _TranslateScreenState extends State<TranslateScreen>
     final current = translationProvider.currentTranslation;
     if (current.isEmpty) return;
     final userId = authProvider.userId ?? 'guest';
-    await translationProvider.saveTranslation(userId, current);
+    final token = authProvider.token;
+    await translationProvider.saveTranslation(userId, current, token: token);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

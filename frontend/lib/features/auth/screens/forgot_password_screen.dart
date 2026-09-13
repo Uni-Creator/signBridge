@@ -12,7 +12,7 @@ class ForgotPasswordScreen extends StatefulWidget {
 }
 
 class _ForgotPasswordScreenState extends State<ForgotPasswordScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   final _emailCtrl = TextEditingController();
 
@@ -33,9 +33,11 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
     _bgController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 10),
+      duration: const Duration(seconds: 20),
     )..repeat(reverse: true);
 
     _cardController = AnimationController(
@@ -50,7 +52,21 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen>
   }
 
   @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    final bottomInset = WidgetsBinding.instance.platformDispatcher.views.first.viewInsets.bottom;
+    if (bottomInset > 0) {
+      _bgController.stop();
+    } else {
+      if (!_bgController.isAnimating) {
+        _bgController.repeat(reverse: true);
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _emailCtrl.dispose();
     _bgController.dispose();
     _cardController.dispose();
@@ -77,11 +93,16 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen>
       body: Stack(
         children: [
           // Animated background
-          AnimatedBuilder(
-            animation: _bgController,
-            builder: (_, __) => CustomPaint(
-              size: MediaQuery.of(context).size,
-              painter: _BgPainter(_bgController.value),
+          Positioned.fill(
+            child: RepaintBoundary(
+              child: AnimatedBuilder(
+                animation: _bgController,
+                builder: (_, __) => CustomPaint(
+                  isComplex: true,
+                  willChange: true,
+                  painter: _BgPainter(_bgController.value),
+                ),
+              ),
             ),
           ),
 
@@ -505,8 +526,7 @@ class _BgPainter extends CustomPainter {
         ..shader = RadialGradient(
           colors: [orb.color, orb.color.withOpacity(0)],
         ).createShader(Rect.fromCircle(
-            center: Offset(orb.cx, orb.cy), radius: orb.r))
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 30);
+            center: Offset(orb.cx, orb.cy), radius: orb.r));
       canvas.drawCircle(Offset(orb.cx, orb.cy), orb.r, paint);
     }
   }

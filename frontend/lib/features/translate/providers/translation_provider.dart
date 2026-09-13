@@ -47,11 +47,11 @@ class TranslationProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> loadHistory(String userId) async {
+  Future<void> loadHistory(String userId, {String? token}) async {
     _isLoadingHistory = true;
     notifyListeners();
     try {
-      final rawHistory = await ApiService.getHistory(userId);
+      final rawHistory = await ApiService.getHistory(userId, token ?? '');
       _history = rawHistory.map((r) => HistoryItem.fromString(r)).toList();
     } catch (_) {
       _history = [];
@@ -60,13 +60,13 @@ class TranslationProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> saveTranslation(String userId, String translation) async {
+  Future<void> saveTranslation(String userId, String translation, {String? token}) async {
     final item = HistoryItem(
       translation: translation,
       timestamp: DateTime.now(),
     );
     _history.insert(0, item);
     notifyListeners();
-    await ApiService.postHistory(userId, item.toStorageString());
+    await ApiService.postHistory(userId, item.toStorageString(), token ?? '');
   }
 }

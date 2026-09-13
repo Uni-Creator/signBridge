@@ -21,9 +21,9 @@ class WebSocketService {
 
   bool get isConnected => _isConnected;
 
-  Future<void> connect() async {
+  Future<void> connect(String token) async {
     try {
-      _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      _channel = WebSocketChannel.connect(Uri.parse('$wsUrl?token=$token'));
       await _channel!.ready;
       _isConnected = true;
       onConnectionChange?.call(true);
