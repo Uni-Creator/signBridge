@@ -198,9 +198,11 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r backend/requirements.txt
 
 cd backend
-python app.py
+python main.py
 # API available at http://localhost:5000
 ```
+
+Configure both Firebase files before starting; see [the backend setup guide](backend/backend_run_guide.md).
 
 ### Frontend Setup
 

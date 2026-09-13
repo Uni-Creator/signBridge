@@ -1,12 +1,4 @@
-import json
-
-import pyrebase
-
-firebaseJSON = open('firebase.json')
-firebaseConfig = json.load(firebaseJSON)
-
-# initialize firebase
-firebase = pyrebase.initialize_app(firebaseConfig)
+from authentication import firebase
 # access firebase real-time database
 db = firebase.database()
 

@@ -50,6 +50,7 @@ backend/share
 .env
 .secrets*
 firebase.json
+firebase-admin.json
 .env.local
 
 *.task

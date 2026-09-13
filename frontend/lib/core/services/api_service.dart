@@ -35,15 +35,18 @@ class ApiService {
     };
   }
 
-  static Future<String> forgotPassword(String email) async {
+  static Future<bool> forgotPassword(String email) async {
     final response = await http.post(
       Uri.parse('$baseUrl/forgot-password'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'email': email}),
     ).timeout(const Duration(seconds: 10));
 
+    if (response.statusCode < 200 || response.statusCode >= 300) return false;
     final data = jsonDecode(response.body);
-    return data['id'] ?? '';
+    final success = data['success'];
+    // The backend returns a confirmation message, or an empty string on failure.
+    return success == true || (success is String && success.trim().isNotEmpty);
   }
 
   static Future<List<String>> getHistory(String userId, String token) async {
