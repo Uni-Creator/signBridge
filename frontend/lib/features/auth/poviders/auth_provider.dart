@@ -102,8 +102,8 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final resId = await ApiService.forgotPassword(email);
-      if (resId.isNotEmpty) {
+      final success = await ApiService.forgotPassword(email);
+      if (success) {
         _isLoading = false;
         notifyListeners();
         return true;

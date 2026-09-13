@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from pathlib import Path
 import pyrebase
 
 logger = logging.getLogger(__name__)
@@ -8,7 +9,7 @@ logger = logging.getLogger(__name__)
 firebase_path = (
     "/etc/secrets/firebase.json"
     if os.path.exists("/etc/secrets/firebase.json")
-    else "firebase.json"
+    else Path(__file__).with_name("firebase.json")
 )
 
 with open(firebase_path) as f:

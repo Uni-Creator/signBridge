@@ -132,7 +132,7 @@ def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.I
 from authentication import register_account, login_account, forgot_password
 from history import retrieve_history, store_translation
 from model import ISLModelAPI
-from firebase_admin import auth as admin_auth
+from firebase_admin_init import admin_auth
 from functools import wraps
 from flask import request, jsonify
 
@@ -224,10 +224,8 @@ def forgot_pwd():
 @app.route("/history", methods=["GET"])
 @require_auth
 def get_history():
-    user_id = request.args.get("id", "")
-    if not user_id:
-        return json.dumps({"history": [], "error": "Missing user id"}), 400
-    return json.dumps({"history": retrieve_history(user_id)})
+    # Legacy clients may send ?id=; only the verified token establishes ownership.
+    return json.dumps({"history": retrieve_history(request.user_id)})
 
 
 @app.route("/history", methods=["POST"])
@@ -370,7 +368,10 @@ def websocket_translate(ws):
 
             # Submit landmark processing for current frame
             # raw_image ownership transfers to the thread; we del our reference
-            landmark_future = executor.submit(_apply_landmarks_async, raw_image)
+            # Keep one landmark job per connection. Drop frames while it is busy
+            # instead of losing its result and growing the executor's queue.
+            if landmark_future is None:
+                landmark_future = executor.submit(_apply_landmarks_async, raw_image)
             del raw_image  # thread has it now; drop main-thread reference
 
             # Collect completed inference result
@@ -410,6 +411,15 @@ def websocket_translate(ws):
     except Exception as e:
         logger.warning(f"WebSocket closed: {e}")
     finally:
+        if last_prediction_future is not None:
+            last_prediction_future.cancel()
+        if landmark_future is not None:
+            # A running job may still use the detectors; finish it before closing.
+            if not landmark_future.cancel():
+                try:
+                    landmark_future.result()
+                except Exception:
+                    logger.exception("Landmark processing failed during disconnect")
         if pose_detector:
             pose_detector.close()
         if hand_detector:
