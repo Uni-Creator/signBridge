@@ -6,7 +6,7 @@ import 'package:SignBridge/core/services/api_service.dart';
 
 void main() {
   setUp(() {
-    dotenv.testLoad(fileInput: 'API_BASE_URL=https://example.test');
+    dotenv.loadFromString(envString: 'API_BASE_URL=https://example.test');
   });
 
   Future<bool> resetWith(String body, int status) {
@@ -21,7 +21,10 @@ void main() {
   }
 
   test('accepts backend confirmation message', () async {
-    expect(await resetWith('{"success":"Password reset email sent successfully."}', 200), isTrue);
+    expect(
+        await resetWith(
+            '{"success":"Password reset email sent successfully."}', 200),
+        isTrue);
   });
 
   test('accepts boolean success', () async {
@@ -29,7 +32,12 @@ void main() {
   });
 
   test('rejects empty, missing and false success', () async {
-    for (final body in ['{"success":""}', '{"success":" "}', '{"success":false}', '{}']) {
+    for (final body in [
+      '{"success":""}',
+      '{"success":" "}',
+      '{"success":false}',
+      '{}'
+    ]) {
       expect(await resetWith(body, 200), isFalse);
     }
   });

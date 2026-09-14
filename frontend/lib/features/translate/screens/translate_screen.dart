@@ -1,18 +1,20 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:provider/provider.dart';
-import 'package:image/image.dart' as img;
+import 'package:flutter/foundation.dart';
+import '../../../core/services/camera_frame_converter.dart';
 
 import '../../auth/poviders/auth_provider.dart';
 import '../providers/translation_provider.dart';
 import '../../../core/services/websocket_service.dart';
 
 class TranslateScreen extends StatefulWidget {
-  const TranslateScreen({super.key});
+  const TranslateScreen({super.key, this.webSocketService});
+
+  final WebSocketService? webSocketService;
 
   @override
   State<TranslateScreen> createState() => _TranslateScreenState();
@@ -24,7 +26,7 @@ class _TranslateScreenState extends State<TranslateScreen>
   List<CameraDescription> _cameras = [];
   int _selectedCamera = 0;
 
-  final WebSocketService _wsService = WebSocketService();
+  late final WebSocketService _wsService;
   final FlutterTts _tts = FlutterTts();
 
   bool _cameraInitialized = false;
@@ -32,14 +34,17 @@ class _TranslateScreenState extends State<TranslateScreen>
   bool _isSpeaking = false;
   String _statusMessage = 'Camera not started';
   double _confidence = 0;
-  Timer? _frameTimer;
+  Future<void> _cameraTask = Future<void>.value();
+  int _cameraOperations = 0;
+  bool _cameraActive = true;
+  final Stopwatch _frameClock = Stopwatch()..start();
 
   // Inference Configuration
   String _inferenceMode = 'hybrid'; // frames, video, hybrid
 
   // Frame Throttling
-  DateTime? _lastFrameTime;
-  static const int FRAME_INTERVAL_MS = 80; // ~12 FPS
+  int? _lastFrameTime;
+  static const int _frameIntervalMs = 80; // ~12 FPS
 
   // static const primaryColor = Color(0xFF2B2D5D);
   // static const accentColor = Color(0xFF4B6CF7);
@@ -47,11 +52,13 @@ class _TranslateScreenState extends State<TranslateScreen>
   @override
   void initState() {
     super.initState();
+    _wsService = widget.webSocketService ?? WebSocketService();
     WidgetsBinding.instance.addObserver(this);
     _initTts();
     _loadCameras();
     _setupWebSocket();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       final token = context.read<AuthProvider>().token ?? '';
       _wsService.connect(token);
     });
@@ -60,44 +67,82 @@ class _TranslateScreenState extends State<TranslateScreen>
   void _initTts() async {
     await _tts.setLanguage('en-US');
     await _tts.setSpeechRate(0.5);
-    _tts.setStartHandler(() => setState(() => _isSpeaking = true));
-    _tts.setCompletionHandler(() => setState(() => _isSpeaking = false));
+    if (!mounted) return;
+    _tts.setStartHandler(() {
+      if (mounted) setState(() => _isSpeaking = true);
+    });
+    _tts.setCompletionHandler(() {
+      if (mounted) setState(() => _isSpeaking = false);
+    });
+  }
+
+  // Native camera operations must finish in order, including disposal.
+  Future<void> _queueCameraOperation(Future<void> Function() action) {
+    _cameraOperations++;
+    if (mounted) setState(() {});
+    _cameraTask = _cameraTask.then((_) => action()).catchError((Object error) {
+      if (mounted) {
+        setState(() => _statusMessage = 'Camera error: $error');
+      }
+    }).whenComplete(() {
+      _cameraOperations--;
+      if (mounted) setState(() {});
+    });
+    return _cameraTask;
   }
 
   Future<void> _loadCameras() async {
     try {
-      _cameras = await availableCameras();
-      if (_cameras.isNotEmpty) {
-        await _initCamera(_cameras[_selectedCamera]);
-      } else {
+      final cameras = await availableCameras();
+      if (!mounted) return;
+      _cameras = cameras;
+      if (_cameras.isEmpty) {
         setState(() => _statusMessage = 'No cameras found');
+        return;
       }
+      await _queueCameraOperation(() => _initCamera(_cameras[_selectedCamera]));
     } catch (e) {
-      setState(() => _statusMessage = 'Camera error: $e');
+      if (mounted) setState(() => _statusMessage = 'Camera error: $e');
+    }
+  }
+
+  Future<void> _releaseCamera() async {
+    final controller = _cameraController;
+    _cameraController = null;
+    _cameraInitialized = false;
+    _isStreaming = false;
+    if (controller == null) return;
+    try {
+      if (controller.value.isStreamingImages) {
+        await controller.stopImageStream();
+      }
+    } finally {
+      await controller.dispose();
     }
   }
 
   Future<void> _initCamera(CameraDescription cam) async {
-    // Dispose previous controller
-    await _cameraController?.dispose();
-
+    await _releaseCamera();
+    if (!mounted || !_cameraActive) return;
     final controller = CameraController(
       cam,
       ResolutionPreset.medium,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
+      imageFormatGroup: defaultTargetPlatform == TargetPlatform.iOS
+          ? ImageFormatGroup.bgra8888
+          : ImageFormatGroup.yuv420,
     );
     _cameraController = controller;
-
     try {
       await controller.initialize();
-      if (!mounted) return;
+      if (!mounted || !_cameraActive) return;
       setState(() {
         _cameraInitialized = true;
         _statusMessage = 'Camera ready. Tap Start to begin.';
       });
-    } catch (e) {
-      setState(() => _statusMessage = 'Camera init failed: $e');
+    } catch (_) {
+      await _releaseCamera();
+      rethrow;
     }
   }
 
@@ -113,6 +158,7 @@ class _TranslateScreenState extends State<TranslateScreen>
     _wsService.onConnectionChange = (connected) {
       if (!mounted) return;
       context.read<TranslationProvider>().setConnected(connected);
+      if (connected) _wsService.sendConfig(_inferenceMode);
       setState(() {
         _statusMessage = connected 
             ? (_isStreaming ? 'Connected to server. Streaming...' : 'Connected to server. Ready.') 
@@ -126,98 +172,58 @@ class _TranslateScreenState extends State<TranslateScreen>
     };
   }
 
-  Future<void> _startStreaming() async {
+  Future<void> _startStreaming() => _queueCameraOperation(_startCameraStream);
+
+  Future<void> _startCameraStream() async {
+    final controller = _cameraController;
+    if (!mounted || !_cameraActive || controller == null ||
+        !controller.value.isInitialized || controller.value.isStreamingImages) {
+      return;
+    }
+    if (!_wsService.isConnected) {
+      setState(() => _statusMessage = 'Connect to the server before starting.');
+      return;
+    }
+    _lastFrameTime = null;
+    await controller.startImageStream((CameraImage image) {
+      if (!mounted || !_cameraActive || !_isStreaming ||
+          controller != _cameraController || !_wsService.isConnected) return;
+      final now = _frameClock.elapsedMilliseconds;
+      if (_lastFrameTime != null && now - _lastFrameTime! < _frameIntervalMs) {
+        return;
+      }
+      _lastFrameTime = now;
+      try {
+        _wsService.sendFrame(CameraFrameConverter.toJpeg(image));
+      } catch (e) {
+        // Stop a broken stream instead of silently showing "Analyzing" forever.
+        setState(() {
+          _isStreaming = false;
+          _statusMessage = 'Frame conversion failed: $e';
+        });
+        unawaited(_queueCameraOperation(_stopCameraStream));
+      }
+    });
+    if (!mounted || !_cameraActive) return;
     setState(() {
       _isStreaming = true;
       _statusMessage = 'Streaming to server...';
     });
-
-    _cameraController?.startImageStream((CameraImage image) async {
-      if (!_isStreaming || !_wsService.isConnected) return;
-
-      final now = DateTime.now();
-      if (_lastFrameTime != null && 
-          now.difference(_lastFrameTime!).inMilliseconds < FRAME_INTERVAL_MS) {
-        return;
-      }
-      _lastFrameTime = now;
-
-      try {
-        final jpegBytes = await _convertToPredictableJpeg(image);
-        if (jpegBytes != null) {
-          _wsService.sendFrame(jpegBytes);
-        }
-      } catch (e) {
-        debugPrint('Frame stream error: $e');
-      }
-    });
   }
 
-
-  Future<Uint8List?> _convertToPredictableJpeg(CameraImage image) async {
-    try {
-      // Manual conversion and resize to 224x224 (checklist mandatory)
-      final dartImg = _convertCameraImage(image);
-      if (dartImg == null) return null;
-
-      final resized = img.copyResize(dartImg, width: 224, height: 224);
-      return Uint8List.fromList(img.encodeJpg(resized, quality: 85));
-    } catch (e) {
-      return null;
+  Future<void> _stopCameraStream() async {
+    _isStreaming = false;
+    final controller = _cameraController;
+    if (controller != null && controller.value.isStreamingImages) {
+      await controller.stopImageStream();
     }
   }
 
-  img.Image? _convertCameraImage(CameraImage image) {
-    try {
-      final int width = image.width;
-      final int height = image.height;
-      final img.Image res = img.Image(width: width, height: height);
-
-      // Simple YUV420 to RGB conversion (fast enough for 224x224)
-      if (image.format.group == ImageFormatGroup.yuv420) {
-        final Plane yPlane = image.planes[0];
-        final Plane uPlane = image.planes[1];
-        final Plane vPlane = image.planes[2];
-
-        for (int y = 0; y < height; y++) {
-          for (int x = 0; x < width; x++) {
-            final int yPos = y * yPlane.bytesPerRow + x;
-            final int uvPos = (y >> 1) * uPlane.bytesPerRow + (x >> 1);
-
-            final int yp = yPlane.bytes[yPos];
-            final int up = uPlane.bytes[uvPos];
-            final int vp = vPlane.bytes[uvPos];
-
-            // Standard YUV to RGB
-            int r = (yp + 1.402 * (vp - 128)).round().clamp(0, 255);
-            int g = (yp - 0.344136 * (up - 128) - 0.714136 * (vp - 128)).round().clamp(0, 255);
-            int b = (yp + 1.772 * (up - 128)).round().clamp(0, 255);
-
-            res.setPixelRgb(x, y, r, g, b);
-          }
-        }
-        return res;
-      } else if (image.format.group == ImageFormatGroup.bgra8888) {
-        // iOS / Some Androids
-        return img.Image.fromBytes(
-          width: width,
-          height: height,
-          bytes: image.planes[0].bytes.buffer,
-          format: img.Format.uint8,
-          numChannels: 4,
-        );
-      }
-    } catch (e) {
-      debugPrint('Conversion error: $e');
-    }
-    return null;
-  }
-
-  Future<void> _stopStreaming() async {
-    await _cameraController?.stopImageStream();
-    setState(() {
-      _isStreaming = false;
-      _statusMessage = 'Stopped. Tap Start to resume.';
+  Future<void> _stopStreaming() {
+    _isStreaming = false;
+    return _queueCameraOperation(() async {
+      await _stopCameraStream();
+      if (mounted) setState(() => _statusMessage = 'Stopped. Tap Start to resume.');
     });
   }
 
@@ -245,58 +251,47 @@ class _TranslateScreenState extends State<TranslateScreen>
     }
   }
 
-  void _switchCamera() async {
-    if (_cameras.length < 2 || _cameraController == null) return;
-    
-    final bool wasStreaming = _isStreaming;
-    
-    // Stop and UI feedback
-    if (wasStreaming) await _stopStreaming();
-    
+  Future<void> _switchCamera() => _queueCameraOperation(() async {
+    if (!mounted || !_cameraActive || _cameras.length < 2) return;
+    final wasStreaming = _isStreaming;
     setState(() {
       _cameraInitialized = false;
       _statusMessage = 'Switching camera...';
     });
-
-    // Cycle index
     _selectedCamera = (_selectedCamera + 1) % _cameras.length;
-
-    // Dispose and Re-init
-    await _cameraController?.dispose();
-    _cameraController = null;
-    
     await _initCamera(_cameras[_selectedCamera]);
-    
-    // Resume streaming if needed
-    if (wasStreaming && _cameraInitialized) {
-      await _startStreaming();
+    if (wasStreaming && mounted && _cameraActive && _cameraInitialized) {
+      await _startCameraStream();
     }
-  }
+  });
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_cameraController == null) {
-      return;
-    }
-    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
-      _stopStreaming();
-      _cameraController?.dispose();
-      setState(() {
-        _cameraInitialized = false;
-      });
-    } else if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed) {
+      _cameraActive = true;
       if (_cameras.isNotEmpty) {
-        _initCamera(_cameras[_selectedCamera]);
+        unawaited(_queueCameraOperation(() => _initCamera(_cameras[_selectedCamera])));
       }
+    } else {
+      _cameraActive = false;
+      _isStreaming = false;
+      unawaited(_queueCameraOperation(_releaseCamera));
     }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _frameTimer?.cancel();
-    _wsService.disconnect();
-    _cameraController?.dispose();
+    _cameraActive = false;
+    _isStreaming = false;
+    _wsService.onTranslation = null;
+    _wsService.onConnectionChange = null;
+    _wsService.onError = null;
+    unawaited(_wsService.disconnect());
+    // Chain cleanup after an in-progress start/stop/initialization operation.
+    _cameraTask = _cameraTask.then((_) => _releaseCamera()).catchError((Object e) {
+      debugPrint('Camera cleanup failed: $e');
+    });
     _tts.stop();
     super.dispose();
   }
@@ -467,7 +462,7 @@ class _TranslateScreenState extends State<TranslateScreen>
                   // Switch Camera
                   if (_cameras.length > 1)
                     GestureDetector(
-                      onTap: _switchCamera,
+                      onTap: _cameraOperations == 0 ? _switchCamera : null,
                       child: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
@@ -627,6 +622,12 @@ class _TranslateScreenState extends State<TranslateScreen>
                     ),
                   ],
 
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(_statusMessage,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                  ),
                   // Start / Stop button
                   SizedBox(
                     width: double.infinity,
@@ -642,7 +643,7 @@ class _TranslateScreenState extends State<TranslateScreen>
                         ),
                         elevation: 4,
                       ),
-                      onPressed: _cameraInitialized
+                      onPressed: _cameraInitialized && _cameraOperations == 0
                           ? (_isStreaming ? _stopStreaming : _startStreaming)
                           : null,
                       icon: Icon(_isStreaming
