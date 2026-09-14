@@ -4,12 +4,15 @@ import time
 from io import BytesIO
 
 import requests
+from dotenv import load_dotenv
 from PIL import Image
+
+load_dotenv()
 
 
 class ISLModelAPI:
     def __init__(self, top_k: int = 5):
-        self.base_url            = os.getenv("BASE_URL", "http://127.0.0.1:5000")
+        self.base_url            = os.getenv("BASE_URL", "127.0.0.1:5000").rstrip("/")
         self.predict_frames_url  = f"{self.base_url}/predict_frames"
         self.predict_video_url   = f"{self.base_url}/predict"
         self.health_url          = f"{self.base_url}/health"
@@ -107,5 +110,6 @@ class ISLModelAPI:
             return {"error": str(e)}
         finally:
             import os
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            if os.environ.get("SAVE_TEST_VIDEOS", "0") != "1":
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)

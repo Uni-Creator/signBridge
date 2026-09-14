@@ -18,6 +18,9 @@ import logging
 import time
 from collections import deque
 from io import BytesIO
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import cv2
 import numpy as np
@@ -32,7 +35,7 @@ from PIL import Image
 # On Render free tier (512MB), MediaPipe alone uses ~400MB — disable it there.
 # Set ENABLE_MEDIAPIPE=1 in Render env vars only if you upgrade to a paid plan.
 # Locally it loads fine.
-_ENABLE_MEDIAPIPE = os.environ.get("ENABLE_MEDIAPIPE", "0") == "1"
+_ENABLE_MEDIAPIPE = os.environ.get("ENABLE_MEDIAPIPE", "1") == "1"
 
 mp_drawing   = None
 mp_vision    = None
@@ -164,6 +167,9 @@ import threading
 threading.Thread(target=model_api.check_health, daemon=True).start()
 
 
+_SAVE_TEST_VIDEOS = os.environ.get("SAVE_TEST_VIDEOS", "0") == "1"
+
+
 def require_auth(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -286,9 +292,32 @@ def websocket_translate(ws):
     else:
         logger.info("Remote model API healthy.")
 
+    def _save_test_video(frames: list, output_dir: str = "temp_videos") -> str:
+        """Saves PIL frames as a local MP4 test video before sending to inference API."""
+        try:
+            if not frames:
+                return ""
+            os.makedirs(output_dir, exist_ok=True)
+            timestamp = int(time.time() * 1000)
+            filepath  = os.path.abspath(os.path.join(output_dir, f"test_clip_{timestamp}.mp4"))
+            
+            width, height = frames[0].size
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out    = cv2.VideoWriter(filepath, fourcc, 15.0, (width, height))
+            for frame in frames:
+                out.write(cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR))
+            out.release()
+            logger.info(f"Saved test video locally: {filepath}")
+            return filepath
+        except Exception as e:
+            logger.warning(f"Failed to save test video locally: {e}")
+            return ""
+
     def _run_inference(frames: list, mode: str) -> dict:
         t0 = time.time()
         try:
+            if _SAVE_TEST_VIDEOS:
+                _save_test_video(frames)
             if mode == "frames":
                 res = model_api.predict_from_frames(frames)
             elif mode == "video":

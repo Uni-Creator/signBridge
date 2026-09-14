@@ -12,11 +12,11 @@ backend/.venv
 backend/share
 
 .env
+.env.*
 .secrets*
 firebase.json
 firebase-admin.json
 *.json
-.env.local
 
 *.task
 *.cfg
@@ -25,4 +25,4 @@ firebase-admin.json
 *.mov
 *.webm
 saved_captures/
-.env
+temp_videos/
