@@ -1,5 +1,5 @@
-# backend_model.py
 import base64
+import os
 import time
 from io import BytesIO
 
@@ -9,7 +9,7 @@ from PIL import Image
 
 class ISLModelAPI:
     def __init__(self, top_k: int = 5):
-        self.base_url            = "https://creator-090-isl-api.hf.space"
+        self.base_url            = os.getenv("BASE_URL", "http://127.0.0.1:5000")
         self.predict_frames_url  = f"{self.base_url}/predict_frames"
         self.predict_video_url   = f"{self.base_url}/predict"
         self.health_url          = f"{self.base_url}/health"
