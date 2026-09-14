@@ -23,7 +23,6 @@ class _SignBridgeHomeState extends State<SignBridgeHome>
   late AnimationController _fadeCtrl;
   late Animation<double> _fadeAnim;
 
-  static const primaryColor = Color(0xFF1E2158);
   static const pageBg = Color(0xFFF5F7FF);
 
   final List<Widget> _screens = const [
@@ -93,7 +92,6 @@ class _BottomNav extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<int> onTap;
 
-  static const primaryColor = Color(0xFF1E2158);
   static const accentColor = Color(0xFF4B6CF7);
 
   @override
@@ -103,7 +101,7 @@ class _BottomNav extends StatelessWidget {
         color: Colors.white,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
+            color: Colors.black.withValues(alpha: 0.08),
             blurRadius: 20,
             offset: const Offset(0, -4),
           ),
@@ -137,7 +135,7 @@ class _BottomNav extends StatelessWidget {
             horizontal: isSelected ? 18 : 12, vertical: 10),
         decoration: BoxDecoration(
           color: isSelected
-              ? accentColor.withOpacity(0.12)
+              ? accentColor.withValues(alpha: 0.12)
               : Colors.transparent,
           borderRadius: BorderRadius.circular(14),
         ),
@@ -171,8 +169,6 @@ class _BottomNav extends StatelessWidget {
 class _HomeTab extends StatelessWidget {
   const _HomeTab();
 
-  static const primaryColor = Color(0xFF1E2158);
-  static const accentColor = Color(0xFF4B6CF7);
   static const pageBg = Color(0xFFF5F7FF);
 
   @override
@@ -222,7 +218,7 @@ class _HomeTab extends StatelessWidget {
                   const SizedBox(height: 24),
 
                   // Mode selector: SLT + SLP
-                  _SectionLabel(label: 'Choose mode'),
+                  const _SectionLabel(label: 'Choose mode'),
                   const SizedBox(height: 12),
                   _ModeGrid(
                     onSLT: () {
@@ -240,7 +236,7 @@ class _HomeTab extends StatelessWidget {
                   const SizedBox(height: 24),
 
                   // Quick actions
-                  _SectionLabel(label: 'Quick actions'),
+                  const _SectionLabel(label: 'Quick actions'),
                   const SizedBox(height: 12),
                   _QuickActions(
                     onHistory: () {
@@ -263,14 +259,14 @@ class _HomeTab extends StatelessWidget {
                   const SizedBox(height: 24),
 
                   // Activity stats
-                  _SectionLabel(label: 'Your activity'),
+                  const _SectionLabel(label: 'Your activity'),
                   const SizedBox(height: 12),
                   const _StatsRow(),
 
                   const SizedBox(height: 24),
 
                   // Support section
-                  _SectionLabel(label: 'Support'),
+                  const _SectionLabel(label: 'Support'),
                   const SizedBox(height: 12),
                   const _SupportCard(),
                 ],
@@ -334,7 +330,7 @@ class _AppHeader extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(7),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.15),
+                      color: Colors.white.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: const Icon(Icons.sign_language,
@@ -380,7 +376,7 @@ class _AppHeader extends StatelessWidget {
                       ],
                       child: CircleAvatar(
                         radius: 18,
-                        backgroundColor: Colors.white.withOpacity(0.2),
+                        backgroundColor: Colors.white.withValues(alpha: 0.2),
                         child: Text(
                           initial,
                           style: const TextStyle(
@@ -405,7 +401,7 @@ class _AppHeader extends StatelessWidget {
               Text(
                 greeting,
                 style: TextStyle(
-                    color: Colors.white.withOpacity(0.65), fontSize: 13),
+                    color: Colors.white.withValues(alpha: 0.65), fontSize: 13),
               ),
               const SizedBox(height: 2),
               const Text(
@@ -449,7 +445,7 @@ class _HeroBanner extends StatelessWidget {
             child: Container(
               width: 100, height: 100,
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.06),
+                color: Colors.white.withValues(alpha: 0.06),
                 shape: BoxShape.circle,
               ),
             ),
@@ -459,7 +455,7 @@ class _HeroBanner extends StatelessWidget {
             child: Container(
               width: 60, height: 60,
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.04),
+                color: Colors.white.withValues(alpha: 0.04),
                 shape: BoxShape.circle,
               ),
             ),
@@ -472,7 +468,7 @@ class _HeroBanner extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(
                     horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.18),
+                  color: Colors.white.withValues(alpha: 0.18),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: const Text(
@@ -497,7 +493,7 @@ class _HeroBanner extends StatelessWidget {
               Text(
                 'Translate signs to text, or convert text back to sign language poses.',
                 style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                     fontSize: 13,
                     height: 1.5),
               ),
@@ -609,7 +605,7 @@ class _ModeCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.05),
+              color: Colors.black.withValues(alpha: 0.05),
               blurRadius: 10,
               offset: const Offset(0, 3),
             ),
@@ -739,7 +735,7 @@ class _QAButton extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.05),
+              color: Colors.black.withValues(alpha: 0.05),
               blurRadius: 8,
               offset: const Offset(0, 2),
             ),
@@ -772,8 +768,8 @@ class _StatsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: const [
+    return const Row(
+      children: [
         Expanded(
             child: _StatCard(value: '142', label: 'Translations\ndone')),
         SizedBox(width: 10),
@@ -870,7 +866,7 @@ class _SupportCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 10,
             offset: const Offset(0, 3),
           ),

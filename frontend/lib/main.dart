@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:provider/provider.dart';
-import 'package:SignBridge/features/auth/poviders/auth_provider.dart';
-import 'package:SignBridge/features/translate/providers/translation_provider.dart';
-import 'package:SignBridge/features/splash/screens/splash_screen.dart';
+import 'package:sign_bridge/features/auth/poviders/auth_provider.dart';
+import 'package:sign_bridge/features/translate/providers/translation_provider.dart';
+import 'package:sign_bridge/features/splash/screens/splash_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 void main() async {

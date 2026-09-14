@@ -6,10 +6,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:SignBridge/core/services/websocket_service.dart';
-import 'package:SignBridge/features/auth/poviders/auth_provider.dart';
-import 'package:SignBridge/features/translate/providers/translation_provider.dart';
-import 'package:SignBridge/features/translate/screens/translate_screen.dart';
+import 'package:sign_bridge/core/services/websocket_service.dart';
+import 'package:sign_bridge/features/auth/poviders/auth_provider.dart';
+import 'package:sign_bridge/features/translate/providers/translation_provider.dart';
+import 'package:sign_bridge/features/translate/screens/translate_screen.dart';
 
 class TestSocket extends WebSocketService {
   bool connected = true;
@@ -83,8 +83,9 @@ class TestCamera extends CameraPlatform {
   Stream<CameraImageData> onStreamedFrameAvailable(int cameraId,
       {CameraImageStreamOptions? options}) {
     events.add('start:$cameraId');
-    if (failStart)
+    if (failStart) {
       throw CameraException('startFailed', 'Test camera start failure');
+    }
     return images.stream;
   }
 

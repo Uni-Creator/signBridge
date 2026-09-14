@@ -1,4 +1,4 @@
-import 'package:SignBridge/features/auth/screens/forgot_password_screen.dart';
+import 'package:sign_bridge/features/auth/screens/forgot_password_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../poviders/auth_provider.dart';
@@ -145,7 +145,7 @@ class _LoginScreenState extends State<LoginScreen>
                               borderRadius: BorderRadius.circular(13),
                               boxShadow: [
                                 BoxShadow(
-                                  color: _primary.withOpacity(0.25),
+                                  color: _primary.withValues(alpha: 0.25),
                                   blurRadius: 14,
                                   offset: const Offset(0, 4),
                                 ),
@@ -198,7 +198,7 @@ class _LoginScreenState extends State<LoginScreen>
                           border: Border.all(color: _border),
                           boxShadow: [
                             BoxShadow(
-                              color: _primary.withOpacity(0.06),
+                              color: _primary.withValues(alpha: 0.06),
                               blurRadius: 32,
                               offset: const Offset(0, 8),
                             ),
@@ -215,10 +215,12 @@ class _LoginScreenState extends State<LoginScreen>
                                 icon: Icons.alternate_email_rounded,
                                 keyboardType: TextInputType.emailAddress,
                                 validator: (v) {
-                                  if (v == null || v.isEmpty)
+                                  if (v == null || v.isEmpty) {
                                     return 'Enter your email';
-                                  if (!v.contains('@'))
+                                  }
+                                  if (!v.contains('@')) {
                                     return 'Invalid email';
+                                  }
                                   return null;
                                 },
                               ),
@@ -241,10 +243,12 @@ class _LoginScreenState extends State<LoginScreen>
                                   ),
                                 ),
                                 validator: (v) {
-                                  if (v == null || v.isEmpty)
+                                  if (v == null || v.isEmpty) {
                                     return 'Enter your password';
-                                  if (v.length < 6)
+                                  }
+                                  if (v.length < 6) {
                                     return 'At least 6 characters';
+                                  }
                                   return null;
                                 },
                               ),
@@ -296,7 +300,7 @@ class _LoginScreenState extends State<LoginScreen>
                                     borderRadius: BorderRadius.circular(14),
                                     boxShadow: [
                                       BoxShadow(
-                                        color: _accent.withOpacity(0.3),
+                                        color: _accent.withValues(alpha: 0.3),
                                         blurRadius: 16,
                                         offset: const Offset(0, 6),
                                       ),
@@ -542,7 +546,7 @@ class _LoginScreenState extends State<LoginScreen>
           border: Border.all(color: _border),
           boxShadow: [
             BoxShadow(
-              color: _primary.withOpacity(0.04),
+              color: _primary.withValues(alpha: 0.04),
               blurRadius: 8,
               offset: const Offset(0, 2),
             ),
@@ -580,26 +584,26 @@ class _BgPainter extends CustomPainter {
         cx: size.width * 0.85,
         cy: size.height * 0.08 + math.sin(t * math.pi * 2) * 30,
         r: 160,
-        color: const Color(0xFF4B6CF7).withOpacity(0.07),
+        color: const Color(0xFF4B6CF7).withValues(alpha: 0.07),
       ),
       _Orb(
         cx: size.width * 0.05,
         cy: size.height * 0.35 + math.cos(t * math.pi * 2) * 25,
         r: 130,
-        color: const Color(0xFF2B2D5D).withOpacity(0.05),
+        color: const Color(0xFF2B2D5D).withValues(alpha: 0.05),
       ),
       _Orb(
         cx: size.width * 0.5,
         cy: size.height * 0.85 + math.sin(t * math.pi) * 20,
         r: 140,
-        color: const Color(0xFF4B6CF7).withOpacity(0.06),
+        color: const Color(0xFF4B6CF7).withValues(alpha: 0.06),
       ),
     ];
 
     for (final orb in orbs) {
       final paint = Paint()
         ..shader = RadialGradient(
-          colors: [orb.color, orb.color.withOpacity(0)],
+          colors: [orb.color, orb.color.withValues(alpha: 0)],
         ).createShader(Rect.fromCircle(
             center: Offset(orb.cx, orb.cy), radius: orb.r));
       canvas.drawCircle(Offset(orb.cx, orb.cy), orb.r, paint);

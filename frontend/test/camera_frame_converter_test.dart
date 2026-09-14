@@ -4,7 +4,7 @@ import 'package:camera/camera.dart';
 import 'package:camera_platform_interface/camera_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
-import 'package:SignBridge/core/services/camera_frame_converter.dart';
+import 'package:sign_bridge/core/services/camera_frame_converter.dart';
 
 CameraImage frame(ImageFormatGroup format, int width, int height,
         List<CameraImagePlane> planes) =>

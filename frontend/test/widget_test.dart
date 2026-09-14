@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:SignBridge/main.dart';
-import 'package:SignBridge/features/auth/screens/login_screen.dart';
-import 'package:SignBridge/features/splash/screens/splash_screen.dart';
+import 'package:sign_bridge/main.dart';
+import 'package:sign_bridge/features/auth/screens/login_screen.dart';
+import 'package:sign_bridge/features/splash/screens/splash_screen.dart';
 
 void main() {
   testWidgets('a signed-out user reaches login after the splash screen',

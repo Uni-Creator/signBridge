@@ -87,7 +87,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           Container(
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
-              color: primaryColor.withOpacity(0.07),
+              color: primaryColor.withValues(alpha: 0.07),
               shape: BoxShape.circle,
             ),
             child: const Icon(Icons.history, size: 56, color: primaryColor),
@@ -129,7 +129,7 @@ class _HistoryCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 10,
             offset: const Offset(0, 3),
           ),
@@ -142,7 +142,7 @@ class _HistoryCard extends StatelessWidget {
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: primaryColor.withOpacity(0.1),
+              color: primaryColor.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
             alignment: Alignment.center,

@@ -73,7 +73,7 @@ class _SplashScreenState extends State<SplashScreen>
                   width: 100,
                   height: 100,
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
+                    color: Colors.white.withValues(alpha: 0.15),
                     shape: BoxShape.circle,
                   ),
                   child: const Icon(
@@ -97,7 +97,7 @@ class _SplashScreenState extends State<SplashScreen>
                   'Breaking Communication Barriers',
                   style: TextStyle(
                     fontSize: 14,
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                     letterSpacing: 0.5,
                   ),
                 ),
@@ -107,7 +107,7 @@ class _SplashScreenState extends State<SplashScreen>
                   height: 32,
                   child: CircularProgressIndicator(
                     strokeWidth: 2.5,
-                    color: Colors.white.withOpacity(0.5),
+                    color: Colors.white.withValues(alpha: 0.5),
                   ),
                 ),
               ],

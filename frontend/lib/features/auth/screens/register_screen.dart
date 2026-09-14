@@ -155,7 +155,7 @@ class _RegisterScreenState extends State<RegisterScreen>
                             border: Border.all(color: _border),
                             boxShadow: [
                               BoxShadow(
-                                color: _primary.withOpacity(0.06),
+                                color: _primary.withValues(alpha: 0.06),
                                 blurRadius: 8,
                                 offset: const Offset(0, 2),
                               ),
@@ -197,7 +197,7 @@ class _RegisterScreenState extends State<RegisterScreen>
                           border: Border.all(color: _border),
                           boxShadow: [
                             BoxShadow(
-                              color: _primary.withOpacity(0.06),
+                              color: _primary.withValues(alpha: 0.06),
                               blurRadius: 32,
                               offset: const Offset(0, 8),
                             ),
@@ -214,10 +214,12 @@ class _RegisterScreenState extends State<RegisterScreen>
                                 icon: Icons.alternate_email_rounded,
                                 keyboardType: TextInputType.emailAddress,
                                 validator: (v) {
-                                  if (v == null || v.isEmpty)
+                                  if (v == null || v.isEmpty) {
                                     return 'Enter your email';
-                                  if (!v.contains('@'))
+                                  }
+                                  if (!v.contains('@')) {
                                     return 'Invalid email';
+                                  }
                                   return null;
                                 },
                               ),
@@ -240,10 +242,12 @@ class _RegisterScreenState extends State<RegisterScreen>
                                   ),
                                 ),
                                 validator: (v) {
-                                  if (v == null || v.isEmpty)
+                                  if (v == null || v.isEmpty) {
                                     return 'Enter a password';
-                                  if (v.length < 6)
+                                  }
+                                  if (v.length < 6) {
                                     return 'At least 6 characters';
+                                  }
                                   return null;
                                 },
                               ),
@@ -266,8 +270,9 @@ class _RegisterScreenState extends State<RegisterScreen>
                                   ),
                                 ),
                                 validator: (v) {
-                                  if (v != _passCtrl.text)
+                                  if (v != _passCtrl.text) {
                                     return 'Passwords do not match';
+                                  }
                                   return null;
                                 },
                               ),
@@ -319,7 +324,7 @@ class _RegisterScreenState extends State<RegisterScreen>
                                     borderRadius: BorderRadius.circular(14),
                                     boxShadow: [
                                       BoxShadow(
-                                        color: _accent.withOpacity(0.3),
+                                        color: _accent.withValues(alpha: 0.3),
                                         blurRadius: 16,
                                         offset: const Offset(0, 6),
                                       ),
@@ -477,26 +482,26 @@ class _BgPainter extends CustomPainter {
         cx: size.width * 0.15,
         cy: size.height * 0.08 + math.sin(t * math.pi * 2) * 30,
         r: 160,
-        color: const Color(0xFF4B6CF7).withOpacity(0.07),
+        color: const Color(0xFF4B6CF7).withValues(alpha: 0.07),
       ),
       _Orb(
         cx: size.width * 0.9,
         cy: size.height * 0.4 + math.cos(t * math.pi * 2) * 25,
         r: 130,
-        color: const Color(0xFF2B2D5D).withOpacity(0.05),
+        color: const Color(0xFF2B2D5D).withValues(alpha: 0.05),
       ),
       _Orb(
         cx: size.width * 0.4,
         cy: size.height * 0.88 + math.sin(t * math.pi) * 20,
         r: 140,
-        color: const Color(0xFF4B6CF7).withOpacity(0.06),
+        color: const Color(0xFF4B6CF7).withValues(alpha: 0.06),
       ),
     ];
 
     for (final orb in orbs) {
       final paint = Paint()
         ..shader = RadialGradient(
-          colors: [orb.color, orb.color.withOpacity(0)],
+          colors: [orb.color, orb.color.withValues(alpha: 0)],
         ).createShader(Rect.fromCircle(
             center: Offset(orb.cx, orb.cy), radius: orb.r));
       canvas.drawCircle(Offset(orb.cx, orb.cy), orb.r, paint);

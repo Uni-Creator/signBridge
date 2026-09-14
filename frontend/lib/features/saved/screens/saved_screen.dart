@@ -32,7 +32,7 @@ class SavedScreen extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
-              color: primaryColor.withOpacity(0.07),
+              color: primaryColor.withValues(alpha: 0.07),
               shape: BoxShape.circle,
             ),
             child: const Icon(Icons.bookmark_outline_rounded,

@@ -187,7 +187,9 @@ class _TranslateScreenState extends State<TranslateScreen>
     _lastFrameTime = null;
     await controller.startImageStream((CameraImage image) {
       if (!mounted || !_cameraActive || !_isStreaming ||
-          controller != _cameraController || !_wsService.isConnected) return;
+          controller != _cameraController || !_wsService.isConnected) {
+        return;
+      }
       final now = _frameClock.elapsedMilliseconds;
       if (_lastFrameTime != null && now - _lastFrameTime! < _frameIntervalMs) {
         return;
@@ -356,10 +358,10 @@ class _TranslateScreenState extends State<TranslateScreen>
                     padding:
                         const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.15),
+                      color: Colors.white.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                          color: Colors.white.withOpacity(0.3), width: 1),
+                          color: Colors.white.withValues(alpha: 0.3), width: 1),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -393,8 +395,8 @@ class _TranslateScreenState extends State<TranslateScreen>
                         const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
                       color: translationProvider.isConnected
-                          ? Colors.green.withOpacity(0.3)
-                          : Colors.red.withOpacity(0.3),
+                          ? Colors.green.withValues(alpha: 0.3)
+                          : Colors.red.withValues(alpha: 0.3),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Row(
@@ -438,9 +440,9 @@ class _TranslateScreenState extends State<TranslateScreen>
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                       decoration: BoxDecoration(
-                        color: Colors.blueAccent.withOpacity(0.3),
+                        color: Colors.blueAccent.withValues(alpha: 0.3),
                         borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: Colors.blueAccent.withOpacity(0.5)),
+                        border: Border.all(color: Colors.blueAccent.withValues(alpha: 0.5)),
                       ),
                       child: Row(
                         children: [
@@ -466,7 +468,7 @@ class _TranslateScreenState extends State<TranslateScreen>
                       child: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.15),
+                          color: Colors.white.withValues(alpha: 0.15),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(Icons.flip_camera_ios,
@@ -507,10 +509,10 @@ class _TranslateScreenState extends State<TranslateScreen>
                       width: double.infinity,
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.12),
+                        color: Colors.white.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(16),
                         border: Border.all(
-                            color: Colors.white.withOpacity(0.2), width: 1),
+                            color: Colors.white.withValues(alpha: 0.2), width: 1),
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -550,7 +552,7 @@ class _TranslateScreenState extends State<TranslateScreen>
                               borderRadius: BorderRadius.circular(4),
                               child: LinearProgressIndicator(
                                 value: _confidence,
-                                backgroundColor: Colors.white.withOpacity(0.2),
+                                backgroundColor: Colors.white.withValues(alpha: 0.2),
                                 valueColor: const AlwaysStoppedAnimation(
                                     Colors.greenAccent),
                                 minHeight: 4,
@@ -598,7 +600,7 @@ class _TranslateScreenState extends State<TranslateScreen>
                           horizontal: 16, vertical: 12),
                       margin: const EdgeInsets.only(bottom: 12),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.1),
+                        color: Colors.white.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: const Row(
@@ -680,11 +682,11 @@ class _TranslateScreenState extends State<TranslateScreen>
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
             color: isActive
-                ? color.withOpacity(0.4)
-                : Colors.white.withOpacity(0.15),
+                ? color.withValues(alpha: 0.4)
+                : Colors.white.withValues(alpha: 0.15),
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: isActive ? color : Colors.white.withOpacity(0.2),
+              color: isActive ? color : Colors.white.withValues(alpha: 0.2),
               width: 1,
             ),
           ),

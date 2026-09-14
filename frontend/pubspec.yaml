@@ -1,4 +1,4 @@
-name: SignBridge
+name: sign_bridge
 description: "SignBridge - Real-time Sign Language Translation App"
 publish_to: 'none'
 

@@ -2,7 +2,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:SignBridge/core/services/api_service.dart';
+import 'package:sign_bridge/core/services/api_service.dart';
 
 void main() {
   setUp(() {

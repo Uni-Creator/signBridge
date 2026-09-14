@@ -23,7 +23,7 @@ class SettingsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.symmetric(vertical: 16),
         children: [
-          _SectionHeader(title: 'PREFERENCES'),
+          const _SectionHeader(title: 'PREFERENCES'),
           _SettingsTile(
             icon: Icons.dark_mode_outlined,
             title: 'Dark Mode',
@@ -31,7 +31,7 @@ class SettingsScreen extends StatelessWidget {
             trailing: Switch(
               value: false, // Placeholder
               onChanged: (val) {},
-              activeColor: const Color(0xFF4B6CF7),
+              activeThumbColor: const Color(0xFF4B6CF7),
             ),
           ),
           _SettingsTile(
@@ -41,11 +41,11 @@ class SettingsScreen extends StatelessWidget {
             trailing: Switch(
               value: true, // Placeholder
               onChanged: (val) {},
-              activeColor: const Color(0xFF4B6CF7),
+              activeThumbColor: const Color(0xFF4B6CF7),
             ),
           ),
           const SizedBox(height: 24),
-          _SectionHeader(title: 'ACCOUNT'),
+          const _SectionHeader(title: 'ACCOUNT'),
           _SettingsTile(
             icon: Icons.person_outline,
             title: 'Profile Details',
@@ -59,8 +59,8 @@ class SettingsScreen extends StatelessWidget {
             onTap: () {},
           ),
           const SizedBox(height: 24),
-          _SectionHeader(title: 'ABOUT'),
-          _SettingsTile(
+          const _SectionHeader(title: 'ABOUT'),
+          const _SettingsTile(
             icon: Icons.info_outline,
             title: 'App Version',
             subtitle: '1.0.0 (Build 1)',
@@ -118,7 +118,7 @@ class _SettingsTile extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.04),
+              color: Colors.black.withValues(alpha: 0.04),
               blurRadius: 6,
               offset: const Offset(0, 2),
             ),
