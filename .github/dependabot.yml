@@ -1,17 +1,83 @@
 version: 2
 
 updates:
+  # Python / Backend dependencies
   - package-ecosystem: "pip"
     directory: "/backend"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
 
+    groups:
+      python-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Flutter / Frontend dependencies
   - package-ecosystem: "pub"
     directory: "/frontend"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "flutter"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
 
+    groups:
+      flutter-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+      flutter-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # GitHub Actions dependencies
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+
+    groups:
+      github-actions-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+      github-actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
