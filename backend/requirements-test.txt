@@ -1,6 +1,6 @@
 flask==2.3.3
 flask-cors==4.0.0
 flask-sock==0.7.0
-numpy==1.26.4
+numpy==2.2.6
 Pillow==10.3.0
 python-dotenv
