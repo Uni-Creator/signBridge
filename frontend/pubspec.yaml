@@ -11,11 +11,11 @@ dependencies:
   flutter:
     sdk: flutter
 
-  cupertino_icons: ^1.0.8
+  cupertino_icons: ^1.0.9
   flutter_screenutil: ^5.9.3
 
   # Camera
-  camera: ^0.11.0+2
+  camera: ^0.12.1
   
   # Networking
   http: ^1.2.1
@@ -29,7 +29,7 @@ dependencies:
   provider: ^6.1.2
   
   # Utilities
-  intl: ^0.19.0
+  intl: ^0.20.3
   flutter_tts: ^4.0.2
   shared_preferences: ^2.3.2
   image: ^4.8.0
