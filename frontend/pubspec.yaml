@@ -20,7 +20,7 @@ dependencies:
   # Networking
   http: ^1.2.1
   web_socket_channel: ^3.0.1
-  connectivity_plus: ^6.0.0
+  connectivity_plus: ^7.3.1
   
   # Permissions
   permission_handler: ^11.3.1
