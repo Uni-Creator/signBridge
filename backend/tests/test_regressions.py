@@ -16,7 +16,10 @@ from unittest.mock import MagicMock, patch
 import flask  # Load real runtime dependencies before temporarily replacing modules.
 import numpy
 from PIL import Image
+from dotenv import load_dotenv
 
+# Load environment variables from .env file for local testing
+load_dotenv()
 
 BACKEND = Path(__file__).resolve().parents[1]
 

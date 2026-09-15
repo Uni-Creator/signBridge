@@ -32,5 +32,15 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Create test environment
+        run: |
+          cat > .env <<'EOF'
+          API_BASE_URL=http://localhost:5000
+          WS_URL=ws://localhost:5000/ws
+          EOF
+
+      - name: Analyze
+        run: flutter analyze
+
       - name: Run Flutter tests
         run: flutter test
