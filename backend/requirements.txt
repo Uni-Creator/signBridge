@@ -6,7 +6,7 @@ pyrebase4==4.9.0
 firebase-admin
 Pillow==10.3.0
 numpy==1.26.4
-opencv-python-headless==4.9.0.80
+opencv-python-headless==5.0.0.93
 requests==2.34.2
 mediapipe==0.10.11
 firebase-admin==7.5.0
