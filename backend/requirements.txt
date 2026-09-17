@@ -2,12 +2,12 @@ setuptools<81
 flask==2.3.3
 flask-cors==4.0.0
 flask-sock==0.7.0
-pyrebase4==4.7.1
+pyrebase4==4.9.0
 firebase-admin
 Pillow==10.3.0
 numpy==1.26.4
 opencv-python-headless==4.9.0.80
-requests==2.29.0
+requests==2.34.2
 mediapipe==0.10.11
 firebase-admin==7.5.0
 gunicorn
