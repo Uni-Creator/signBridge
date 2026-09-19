@@ -2,10 +2,14 @@ import json
 import logging
 import os
 from pathlib import Path
-import pyrebase
+
+import requests
+
+from firebase_admin_init import admin_auth  # importing this initializes the app once
 
 logger = logging.getLogger(__name__)
 
+# Web API key, needed only for the REST calls the Admin SDK can't do
 firebase_path = (
     "/etc/secrets/firebase.json"
     if os.path.exists("/etc/secrets/firebase.json")
@@ -13,42 +17,64 @@ firebase_path = (
 )
 
 with open(firebase_path) as f:
-    firebaseConfig = json.load(f)
+    data = json.load(f)
+    FIREBASE_API_KEY = data["apiKey"]
+    _IDENTITY_URL = data["identityURL"]
 
-firebase = pyrebase.initialize_app(firebaseConfig)
-auth     = firebase.auth()
+del data, f
 
-
-def register_account(email, password):
-    try:
-        user = auth.create_user_with_email_and_password(email, password)
-        return {"id": user["localId"], "token": user["idToken"]}
-    except Exception:
-        logger.exception("Register failed")
-        return None
+def _identity_request(endpoint, payload):
+    resp = requests.post(
+        f"{_IDENTITY_URL}/{endpoint}",
+        params={"key": FIREBASE_API_KEY},
+        json=payload,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def login_account(email, password):
     try:
-        login = auth.sign_in_with_email_and_password(email, password)
+        login = _identity_request(
+            "accounts:signInWithPassword",
+            {"email": email, "password": str(password), "returnSecureToken": True},
+        )
         return {"id": login["localId"], "token": login["idToken"]}
     except Exception:
         logger.exception("Login failed")
         return None
 
 
+def register_account(email, password):
+    try:
+        admin_auth.create_user(email=email, password=str(password))
+        # Admin SDK doesn't return an ID token, so sign in to get one
+        return login_account(email, password)
+    except Exception:
+        logger.exception("Register failed")
+        return None
+
 def forgot_password(email):
     try:
-        auth.send_password_reset_email(email)
-        return "Password reset email sent successfully."
+        _identity_request(
+            "accounts:sendOobCode",
+            {
+                "requestType": "PASSWORD_RESET",
+                "email": email,
+            },
+        )
     except Exception:
-        logger.exception("Forgot password failed")
-        return ""
+        logger.exception("Forgot password request failed")
 
+    return True
 
 def email_verify(id_token):
     try:
-        auth.send_email_verification(id_token)
+        _identity_request(
+            "accounts:sendOobCode",
+            {"requestType": "VERIFY_EMAIL", "idToken": id_token},
+        )
         return "Email verification link sent successfully."
     except Exception:
         logger.exception("Email verification failed")

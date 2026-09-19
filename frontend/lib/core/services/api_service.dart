@@ -1,77 +1,171 @@
 import 'dart:convert';
+
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // Change this to your local machine IP when running on a physical device
-  // Use 10.0.2.2 for Android emulator
   static String get baseUrl => dotenv.env['API_BASE_URL']!;
 
-  static Future<Map<String, String>> login(String email, String password) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/login'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'email': email, 'password': password}),
-    ).timeout(const Duration(seconds: 10));
+  // Authentication
+
+  static Future<Map<String, String>> login(
+    String email,
+    String password,
+  ) async {
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/login'),
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'email': email,
+            'password': password,
+          }),
+        )
+        .timeout(const Duration(seconds: 10));
 
     final data = jsonDecode(response.body);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+        data['error']?.toString() ?? 'Login failed',
+      );
+    }
+
     return {
       'id': data['id']?.toString() ?? '',
       'token': data['token']?.toString() ?? '',
     };
   }
 
-  static Future<Map<String, String>> register(String email, String password) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/register'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'email': email, 'password': password}),
-    ).timeout(const Duration(seconds: 10));
+  static Future<Map<String, String>> register(
+    String email,
+    String password,
+  ) async {
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/register'),
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'email': email,
+            'password': password,
+          }),
+        )
+        .timeout(const Duration(seconds: 10));
 
     final data = jsonDecode(response.body);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+        data['error']?.toString() ?? 'Registration failed',
+      );
+    }
+
     return {
       'id': data['id']?.toString() ?? '',
       'token': data['token']?.toString() ?? '',
     };
   }
 
-  static Future<bool> forgotPassword(String email) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/forgot-password'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'email': email}),
-    ).timeout(const Duration(seconds: 10));
+  static Future<bool> forgotPassword(
+    String email,
+  ) async {
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/forgot-password'),
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'email': email,
+          }),
+        )
+        .timeout(const Duration(seconds: 10));
 
-    if (response.statusCode < 200 || response.statusCode >= 300) return false;
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300) {
+      return false;
+    }
+
     final data = jsonDecode(response.body);
     final success = data['success'];
-    // The backend returns a confirmation message, or an empty string on failure.
-    return success == true || (success is String && success.trim().isNotEmpty);
+
+    return success == true ||
+        (success is String && success.trim().isNotEmpty);
   }
 
-  static Future<List<String>> getHistory(String userId, String token) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/history?id=$userId'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      },
-    ).timeout(const Duration(seconds: 10));
+  // History
+
+  static Future<List<Map<String, String>>> getHistory(
+    String token,
+  ) async {
+    final response = await http
+        .get(
+          Uri.parse('$baseUrl/history'),
+          headers: {
+            'Authorization': 'Bearer $token',
+          },
+        )
+        .timeout(const Duration(seconds: 10));
 
     final data = jsonDecode(response.body);
-    final hist = data['history'];
-    if (hist is List) return hist.cast<String>();
-    return [];
+
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300) {
+      throw Exception(
+        data['error']?.toString() ?? 'Failed to retrieve history',
+      );
+    }
+
+    final history = data['history'];
+
+    if (history is! List) {
+      return [];
+    }
+
+    return history
+        .whereType<Map>()
+        .map<Map<String, String>>(
+          (item) => {
+            'id': item['id']?.toString() ?? '',
+            'translation':
+                item['translation']?.toString() ?? '',
+            'timestamp':
+                item['timestamp']?.toString() ?? '',
+          },
+        )
+        .toList();
   }
 
-  static Future<void> postHistory(String userId, String translation, String token) async {
-    await http.post(
-      Uri.parse('$baseUrl/history'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      },
-      body: jsonEncode({'id': userId, 'translation': translation}),
-    ).timeout(const Duration(seconds: 10));
+  static Future<void> postHistory(
+    String translation,
+    String token,
+  ) async {
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/history'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode({
+            'translation': translation,
+          }),
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300) {
+      final data = jsonDecode(response.body);
+
+      throw Exception(
+        data['error']?.toString() ??
+            data['detail']?.toString() ??
+            'Failed to store history',
+      );
+    }
   }
 }

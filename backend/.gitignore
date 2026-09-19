@@ -26,3 +26,5 @@ firebase-admin.json
 *.webm
 saved_captures/
 temp_videos/
+*postman
+*temp*

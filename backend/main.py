@@ -3,12 +3,12 @@
 SignBridge Backend - Flask + WebSocket Server
 ============================================
 Endpoints:
-  POST /register       → Firebase user registration
-  POST /login          → Firebase user login
-  POST /forgot-password → Send password reset email
-  GET  /history        → Retrieve translation history
-  POST /history        → Store a translation
-  WS   /ws             → Real-time sign detection
+  POST /register       -> Firebase user registration
+  POST /login          -> Firebase user login
+  POST /forgot-password -> Send password reset email
+  GET  /history        -> Retrieve translation history
+  POST /history        -> Store a translation
+  WS   /ws             -> Real-time sign detection
 """
 import os
 import base64
@@ -24,120 +24,31 @@ load_dotenv()
 
 import cv2
 import numpy as np
+
 import concurrent.futures
 from flask import Flask, request
 from flask_cors import CORS
 from flask_sock import Sock
-from PIL import Image
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_limiter.errors import RateLimitExceeded
+
+import re
 
 
-#  MediaPipe: only load if ENABLE_MEDIAPIPE=1 is set ─
-# On Render free tier (512MB), MediaPipe alone uses ~400MB — disable it there.
-# Set ENABLE_MEDIAPIPE=1 in Render env vars only if you upgrade to a paid plan.
-# Locally it loads fine.
-_ENABLE_MEDIAPIPE = os.environ.get("ENABLE_MEDIAPIPE", "1") == "1"
-
-mp_drawing   = None
-mp_vision    = None
-mp_python    = None
-MEDIAPIPE_OK = False
-
-if _ENABLE_MEDIAPIPE:
-    try:
-        import mediapipe as mp
-        from mediapipe.tasks import python as mp_python
-        from mediapipe.tasks.python import vision as mp_vision
-        from mediapipe.framework.formats import landmark_pb2
-        mp_drawing   = mp.solutions.drawing_utils
-        MEDIAPIPE_OK = True
-        print("[MediaPipe] Loaded successfully.")
-    except Exception as e:
-        print(f"[MediaPipe] Init failed (landmarks disabled): {e}")
-else:
-    print("[MediaPipe] Disabled via ENABLE_MEDIAPIPE env var.")
-
-
-def build_landmarkers():
-    if not MEDIAPIPE_OK:
-        logger.info("MediaPipe not available. Landmarks will be disabled.")
-        return None, None
-    try:
-        pose = mp_vision.PoseLandmarker.create_from_options(
-            mp_vision.PoseLandmarkerOptions(
-                base_options=mp_python.BaseOptions(
-                    model_asset_path="pose_landmarker_full.task")
-            )
-        )
-        hand = mp_vision.HandLandmarker.create_from_options(
-            mp_vision.HandLandmarkerOptions(
-                base_options=mp_python.BaseOptions(
-                    model_asset_path="hand_landmarker.task"),
-                num_hands=2,
-            )
-        )
-        return pose, hand
-    except Exception as e:
-        logging.error(f"Landmarker init failed: {e}")
-        return None, None
-
-
-def apply_landmarks(image: Image.Image, pose_detector, hand_detector) -> Image.Image:
-    import mediapipe as mp
-    from mediapipe.framework.formats import landmark_pb2
-
-    img_rgb  = np.array(image)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-
-    pose_result = pose_detector.detect(mp_image) if pose_detector else None
-    hand_result = hand_detector.detect(mp_image) if hand_detector else None
-
-    if (not pose_result or not pose_result.pose_landmarks) and \
-       (not hand_result or not hand_result.hand_landmarks):
-        del img_rgb, mp_image
-        return image
-
-    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-    del img_rgb, mp_image  # free originals immediately after conversion
-
-    if pose_result and pose_result.pose_landmarks:
-        for lms in pose_result.pose_landmarks:
-            proto = landmark_pb2.NormalizedLandmarkList()
-            proto.landmark.extend([
-                landmark_pb2.NormalizedLandmark(x=l.x, y=l.y, z=l.z)
-                for l in lms
-            ])
-            mp_drawing.draw_landmarks(
-                img_bgr, proto,
-                mp.solutions.pose.POSE_CONNECTIONS,
-                mp.solutions.drawing_styles.get_default_pose_landmarks_style(),
-            )
-
-    if hand_result and hand_result.hand_landmarks:
-        for lms in hand_result.hand_landmarks:
-            proto = landmark_pb2.NormalizedLandmarkList()
-            proto.landmark.extend([
-                landmark_pb2.NormalizedLandmark(x=l.x, y=l.y, z=l.z)
-                for l in lms
-            ])
-            mp_drawing.draw_landmarks(
-                img_bgr, proto,
-                mp.solutions.hands.HAND_CONNECTIONS,
-                mp.solutions.drawing_styles.get_default_hand_landmarks_style(),
-                mp.solutions.drawing_styles.get_default_hand_connections_style(),
-            )
-
-    result_image = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
-    del img_bgr
-    return result_image
+def get_user_id():
+    return getattr(request, "user_id", get_remote_address())
 
 
 #  App setup 
 from authentication import register_account, login_account, forgot_password
-from history import retrieve_history, store_translation
+from history import retrieve_history, store_translation, delete_translation, delete_all_translations
+from websocket_handler import handle_websocket
 from model import ISLModelAPI
 from firebase_admin_init import admin_auth
 from functools import wraps
 from flask import request, jsonify
+
 
 
 logging.basicConfig(
@@ -147,6 +58,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app  = Flask(__name__)
+limiter = Limiter(
+    get_user_id,
+    app=app,
+    default_limits=["100 per minute", "5000 per day"]
+)
 allowed_origins_str = os.environ.get(
     "ALLOWED_ORIGINS",
     "http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000,app://signbridge"
@@ -187,281 +103,276 @@ def require_auth(f):
     return wrapper
 
 
+@app.errorhandler(RateLimitExceeded)
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    return jsonify({
+        "error": str(e.description)
+    }), 429
+
+
+
+def check_type(check_password=True):
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            account = request.get_json(silent=True)
+
+            if not account or "email" not in account:
+                return jsonify({
+                    "id": "",
+                    "token": "",
+                    "error": "Missing email"
+                }), 400
+
+            if not isinstance(account["email"], str):
+                return jsonify({
+                    "id": "",
+                    "token": "",
+                    "error": "Email must be a string"
+                }), 400
+
+            if not re.match(
+                r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
+                account["email"]
+            ):
+                return jsonify({
+                    "id": "",
+                    "token": "",
+                    "error": "Invalid email"
+                }), 400
+
+            if check_password:
+                if "password" not in account:
+                    return jsonify({
+                        "id": "",
+                        "token": "",
+                        "error": "Missing password"
+                    }), 400
+
+                if not isinstance(account["password"], str):
+                    return jsonify({
+                        "id": "",
+                        "token": "",
+                        "error": "Password must be a string"
+                    }), 400
+
+                if len(account["password"]) < 6:
+                    return jsonify({
+                        "id": "",
+                        "token": "",
+                        "error": "Password must be at least 6 characters long"
+                    }), 400
+
+            return f(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 #  REST routes 
 @app.route("/")
 def index():
     return json.dumps({"message": "SignBridge API is running", "version": "2.0"})
 
 
+
+
 @app.route("/register", methods=["POST"])
+@limiter.limit(
+    "5 per minute", 
+    error_message="Too many registration attempts. Please try again later."
+)
+@check_type()
 def register():
     account = request.get_json(silent=True)
-    if not account or "email" not in account or "password" not in account:
-        return json.dumps({"id": "", "token": "", "error": "Missing email or password"}), 400
+
     res = register_account(account["email"], account["password"])
+
     if not res:
-        return json.dumps({"id": "", "token": "", "error": "Registration failed"}), 400
-    logger.info(f"Register: {account['email']} → id={res['id']}")
-    return json.dumps(res)
+        return json.dumps({
+            "id": "", 
+            "token": "",
+            "error": "Registration failed"
+            }), 400
+
+    logger.info(f"Register: {account['email']} -> id={res['id']}")
+    return json.dumps(res), 200
 
 
 @app.route("/login", methods=["POST"])
+@limiter.limit(
+    "5 per minute", 
+    error_message="Too many login attempts. Please try again later."
+)
+@check_type()
 def login():
     account = request.get_json(silent=True)
-    if not account or "email" not in account or "password" not in account:
-        return json.dumps({"id": "", "token": "", "error": "Missing email or password"}), 400
+
     res = login_account(account["email"], account["password"])
     if not res:
-        return json.dumps({"id": "", "token": "", "error": "Login failed"}), 400
-    logger.info(f"Login: {account['email']} → id={res['id']}")
-    return json.dumps(res)
+        return json.dumps({
+            "id": "", 
+            "token": "",
+            "error": "Login failed"
+            }), 400
+    logger.info(f"Login: {account['email']} -> id={res['id']}")
+    return json.dumps(res), 200
+
 
 
 @app.route("/forgot-password", methods=["POST"])
+@limiter.limit(
+    "3 per minute", 
+    error_message="Too many forgot password attempts. Please try again later."
+)
+@check_type(check_password=False)
 def forgot_pwd():
     account = request.get_json(silent=True)
-    if not account or "email" not in account:
-        return json.dumps({"success": False, "error": "Missing email"}), 400
-    success = forgot_password(account["email"])
-    logger.info(f"Forgot Password: {account['email']} → {success}")
-    return json.dumps({"success": success})
+
+    forgot_password(account["email"])
+    
+    logger.info("Password reset request received")
+
+    return jsonify({
+        "success": "Password reset email has been sent."
+    }), 200
+
+
 
 
 @app.route("/history", methods=["GET"])
 @require_auth
+@limiter.limit(
+    "20 per minute", 
+    error_message="Too many history requests. Please try again later."
+)
 def get_history():
-    # Legacy clients may send ?id=; only the verified token establishes ownership.
-    return json.dumps({"history": retrieve_history(request.user_id)})
+    user_id = request.user_id
 
-
-@app.route("/history", methods=["POST"])
-@require_auth
-def post_history():
     try:
-        body = request.get_json(silent=True)
-        if not body:
-            return json.dumps({"message": "error", "detail": "No JSON body"}), 400
-        user_id     = request.user_id
-        translation = body.get("translation", "")
-        if not user_id or not translation:
-            return json.dumps(
-                {"message": "error", "detail": "Missing id or translation"}), 400
-        store_translation(user_id, translation)
-        return json.dumps({"message": "success"})
-    except Exception as e:
-        logger.error(f"post_history error: {e}")
-        return json.dumps({"message": "error", "detail": str(e)}), 500
+        return json.dumps({
+            "history": retrieve_history(user_id)
+        }), 200
+
+    except Exception:
+        logger.exception(
+            "Failed to retrieve history",
+        )
+        return json.dumps({
+            "history": "",
+            "error": "Failed to retrieve history"
+        }), 500
 
 
-#  WebSocket 
+
+@app.route("/history/store", methods=["POST"])
+@require_auth
+@limiter.limit(
+    "50 per minute", 
+    error_message="Too many store requests. Please try again later."
+)
+def store_history():
+    user_id = request.user_id
+
+    data = request.get_json()
+
+    if not data or "translation" not in data:
+        return jsonify({"error": "Missing translation"}), 400
+
+    try:
+        item = store_translation(
+            user_id,
+            data["translation"]
+        )
+
+        return jsonify(item), 201
+
+    except Exception:
+        logger.exception(
+            "Failed to store history"
+        )
+        return jsonify({
+            "error": "Failed to store history"
+        }), 500
+
+
+
+@app.route("/history/<translation_id>", methods=["DELETE"])
+@require_auth
+@limiter.limit(
+    "50 per minute", 
+    error_message="Too many delete history requests. Please try again later."
+)
+def delete_history(translation_id):
+    user_id = request.user_id
+
+    try:
+        deleted = delete_translation(
+            user_id,
+            translation_id
+        )
+
+        if not deleted:
+            return jsonify({
+                "error": "Translation not found"
+            }), 404
+
+        return jsonify({
+            "message": "Translation deleted"
+        }), 200
+
+    except Exception:
+        logger.exception(
+            "Failed to delete history"
+        )
+        return jsonify({
+            "error": "Failed to delete history"
+        }), 500
+
+
+
+@app.route("/history/clear", methods=["DELETE"])
+@require_auth
+@limiter.limit(
+    "10 per minute", 
+    error_message="Too many clear requests. Please try again later."
+)
+def clear_history():
+    user_id = request.user_id
+    try:
+        deleted = delete_all_translations(user_id)
+        if not deleted:
+            return jsonify({
+                "error": "No history found"
+            }), 404
+        return jsonify({
+            "message": "History deleted"
+        }), 200
+    except Exception:
+        logger.exception(
+            "Failed to delete history"
+        )
+        return jsonify({
+            "error": "Failed to delete history"
+        }), 500
+
+
+
+#  WebSocket Route
+#  for live translations
 @sock.route("/ws")
 def websocket_translate(ws):
-    token = request.args.get("token", "")
-    try:
-        decoded = admin_auth.verify_id_token(token)
-        user_id = decoded["uid"]
-    except Exception:
-        ws.send(json.dumps({"error": "Unauthorized"}))
-        ws.close()
-        return
-    logger.info(f"WebSocket client connected: {user_id}")
-    ws.send(json.dumps({"status": "connected", "message": "Ready for frames"}))
-
-    if not MEDIAPIPE_OK:
-        ws.send(json.dumps({
-            "status": "info",
-            "message": "Landmarks disabled on this server (memory limit). Accuracy may be lower."
-        }))
-
-    config                 = {"mode": "frames"}
-    frame_buffer           = deque(maxlen=CLIP_LENGTH)
-    last_receive_time      = 0.0
-    last_prediction_future = None
-    landmark_future        = None
-    frame_count            = 0  # for periodic GC
-
-    pose_detector, hand_detector = build_landmarkers()
-    landmarks_enabled = pose_detector is not None and hand_detector is not None
-
-    if not model_api.check_health():
-        ws.send(json.dumps({
-            "status": "api_warming",
-            "message": "Model API warming up, please wait..."
-        }))
-        logger.warning("Remote model API not ready — predictions may fail.")
-    else:
-        logger.info("Remote model API healthy.")
-
-    def _save_test_video(frames: list, output_dir: str = "temp_videos") -> str:
-        """Saves PIL frames as a local MP4 test video before sending to inference API."""
-        try:
-            if not frames:
-                return ""
-            os.makedirs(output_dir, exist_ok=True)
-            timestamp = int(time.time() * 1000)
-            filepath  = os.path.abspath(os.path.join(output_dir, f"test_clip_{timestamp}.mp4"))
-            
-            width, height = frames[0].size
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out    = cv2.VideoWriter(filepath, fourcc, 15.0, (width, height))
-            for frame in frames:
-                out.write(cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR))
-            out.release()
-            logger.info(f"Saved test video locally: {filepath}")
-            return filepath
-        except Exception as e:
-            logger.warning(f"Failed to save test video locally: {e}")
-            return ""
-
-    def _run_inference(frames: list, mode: str) -> dict:
-        t0 = time.time()
-        try:
-            if _SAVE_TEST_VIDEOS:
-                _save_test_video(frames)
-            if mode == "frames":
-                res = model_api.predict_from_frames(frames)
-            elif mode == "video":
-                res = model_api.predict(frames)
-            else:
-                res = model_api.predict_from_frames(frames)
-                if "error" in res:
-                    logger.warning("Hybrid: frames path failed, falling back to video")
-                    res = model_api.predict(frames)
-            res["total_latency_ms"] = round((time.time() - t0) * 1000, 2)
-        finally:
-            # Always release the frames list passed into this thread
-            del frames
-        return res
-
-    def _apply_landmarks_async(raw_image: Image.Image) -> Image.Image:
-        try:
-            if landmarks_enabled:
-                return apply_landmarks(raw_image, pose_detector, hand_detector)
-            return raw_image
-        finally:
-            # Release the input image reference held by this thread
-            del raw_image
-
-    try:
-        while True:
-            message = ws.receive(timeout=30)
-            if not message:
-                break
-
-            # Config command
-            try:
-                data = json.loads(message)
-                if data.get("type") == "config":
-                    new_mode = data.get("mode")
-                    if new_mode in ("frames", "video", "hybrid"):
-                        config["mode"] = new_mode
-                        ws.send(json.dumps(
-                            {"status": "config_updated", "mode": new_mode}))
-                        logger.info(f"Inference mode → {new_mode}")
-                    continue
-            except Exception:
-                pass
-
-            # Frame rate limiter
-            now = time.monotonic()
-            if now - last_receive_time < FRAME_DELAY:
-                continue
-            last_receive_time = now
-
-            # Decode frame
-            try:
-                data      = json.loads(message)
-                b64       = data.get("frame", "")
-                if not b64:
-                    continue
-                img_bytes = base64.b64decode(b64)
-                raw_image = Image.open(BytesIO(img_bytes)).convert("RGB")
-                del img_bytes  # decoded — original bytes no longer needed
-            except Exception as e:
-                logger.warning(f"Frame decode error: {e}")
-                ws.send(json.dumps({"error": "Invalid frame"}))
-                continue
-
-            frame_count += 1
-
-            # Collect previous landmark result
-            if landmark_future is not None and landmark_future.done():
-                try:
-                    processed_image = landmark_future.result()
-                    resized = processed_image.resize((RESIZE_DIM, RESIZE_DIM))
-                    del processed_image  # full-size annotated frame no longer needed
-                    frame_buffer.append(resized)
-                except Exception as e:
-                    logger.warning(f"Landmark future error: {e}")
-                landmark_future = None  # release future reference
-
-            # Submit landmark processing for current frame
-            # raw_image ownership transfers to the thread; we del our reference
-            # Keep one landmark job per connection. Drop frames while it is busy
-            # instead of losing its result and growing the executor's queue.
-            if landmark_future is None:
-                landmark_future = executor.submit(_apply_landmarks_async, raw_image)
-            del raw_image  # thread has it now; drop main-thread reference
-
-            # Collect completed inference result
-            if last_prediction_future is not None and last_prediction_future.done():
-                try:
-                    result = last_prediction_future.result()
-                    if "error" in result:
-                        logger.error(f"Inference error: {result['error']}")
-                    else:
-                        label = result.get("prediction", "")
-                        conf  = float(result.get("confidence", 0.0))
-                        logger.info(
-                            f"[{config['mode'].upper()}] {label} {conf:.0%} | "
-                            f"total={result.get('total_latency_ms', 0):.0f}ms "
-                            f"hf={result.get('inference_time_ms', 0):.0f}ms"
-                        )
-                        if label:
-                            ws.send(json.dumps(
-                                {"label": label, "confidence": conf}))
-                            frame_buffer.clear()
-                except Exception as e:
-                    logger.error(f"Inference result error: {e}")
-                last_prediction_future = None  # release future + its frame refs
-
-            # Dispatch inference when buffer full
-            if len(frame_buffer) == CLIP_LENGTH and last_prediction_future is None:
-                frames_copy            = list(frame_buffer)
-                frame_buffer.clear()  # don't hold two copies simultaneously
-                last_prediction_future = executor.submit(
-                    _run_inference, frames_copy, config["mode"])
-                del frames_copy  # thread has it now
-
-            # Periodic GC every 100 frames to catch any lingering numpy/PIL refs
-            if frame_count % 100 == 0:
-                gc.collect()
-
-    except Exception as e:
-        logger.warning(f"WebSocket closed: {e}")
-    finally:
-        if last_prediction_future is not None:
-            last_prediction_future.cancel()
-        if landmark_future is not None:
-            # A running job may still use the detectors; finish it before closing.
-            if not landmark_future.cancel():
-                try:
-                    landmark_future.result()
-                except Exception:
-                    logger.exception("Landmark processing failed during disconnect")
-        if pose_detector:
-            pose_detector.close()
-        if hand_detector:
-            hand_detector.close()
-        logger.info("WebSocket client disconnected")
+    handle_websocket(ws, model_api, executor)
 
 
 #  Entry point 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"\n{'='*60}")
-    print(f"  SignBridge Backend  →  http://0.0.0.0:{port}/")
-    print(f"  WebSocket         →  ws://0.0.0.0:{port}/ws")
-    print(f"  Android emulator  →  use 10.0.2.2 instead of localhost")
+    print(f"  SignBridge Backend  ->  http://0.0.0.0:{port}/")
+    print(f"  WebSocket         ->  ws://0.0.0.0:{port}/ws")
+    print(f"  Android emulator  ->  use 10.0.2.2 instead of localhost")
     print(f"{'='*60}\n")
     app.run(host="0.0.0.0", port=port, threaded=True)
