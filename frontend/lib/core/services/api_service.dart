@@ -146,7 +146,7 @@ class ApiService {
   ) async {
     final response = await http
         .post(
-          Uri.parse('$baseUrl/history'),
+          Uri.parse('$baseUrl/history/store'),
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $token',
@@ -165,6 +165,55 @@ class ApiService {
         data['error']?.toString() ??
             data['detail']?.toString() ??
             'Failed to store history',
+      );
+    }
+  }
+
+  static Future<void> deleteHistoryItem(
+    String id,
+    String token,
+  ) async {
+    final response = await http
+        .delete(
+          Uri.parse('$baseUrl/history/$id'),
+          headers: {
+            'Authorization': 'Bearer $token',
+          },
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300) {
+      final data = jsonDecode(response.body);
+
+      throw Exception(
+        data['error']?.toString() ??
+            data['detail']?.toString() ??
+            'Failed to delete history item',
+      );
+    }
+  }
+
+  static Future<void> clearHistory(
+    String token,
+  ) async {
+    final response = await http
+        .delete(
+          Uri.parse('$baseUrl/history/clear'),
+          headers: {
+            'Authorization': 'Bearer $token',
+          },
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300) {
+      final data = jsonDecode(response.body);
+
+      throw Exception(
+        data['error']?.toString() ??
+            data['detail']?.toString() ??
+            'Failed to clear history',
       );
     }
   }

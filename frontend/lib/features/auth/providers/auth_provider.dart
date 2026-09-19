@@ -30,6 +30,16 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  String _formatError(dynamic e, String fallback) {
+    if (e is Exception) {
+      final msg = e.toString().replaceFirst('Exception: ', '').trim();
+      if (msg.isNotEmpty && !msg.contains('SocketException')) {
+        return msg;
+      }
+    }
+    return fallback;
+  }
+
   Future<bool> login(String email, String password) async {
     _isLoading = true;
     _error = null;
@@ -54,7 +64,7 @@ class AuthProvider extends ChangeNotifier {
         _error = 'Invalid credentials. Please try again.';
       }
     } catch (e) {
-      _error = 'Connection error. Is the server running?';
+      _error = _formatError(e, 'Connection error. Is the server running?');
     }
 
     _isLoading = false;
@@ -88,7 +98,7 @@ class AuthProvider extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint(e.toString());
-      _error = 'Connection error. Is the server running?';
+      _error = _formatError(e, 'Connection error. Is the server running?');
     }
 
     _isLoading = false;
@@ -112,7 +122,7 @@ class AuthProvider extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint(e.toString());
-      _error = 'Connection error. Is the server running?';
+      _error = _formatError(e, 'Connection error. Is the server running?');
     }
 
     _isLoading = false;

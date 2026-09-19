@@ -1,7 +1,7 @@
 import 'package:sign_bridge/features/auth/screens/forgot_password_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../poviders/auth_provider.dart';
+import '../providers/auth_provider.dart';
 import '../../home/screens/home_screen.dart';
 import 'register_screen.dart';
 import 'dart:math' as math;

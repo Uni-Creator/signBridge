@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sign_bridge/core/services/websocket_service.dart';
-import 'package:sign_bridge/features/auth/poviders/auth_provider.dart';
+import 'package:sign_bridge/features/auth/providers/auth_provider.dart';
 import 'package:sign_bridge/features/translate/providers/translation_provider.dart';
 import 'package:sign_bridge/features/translate/screens/translate_screen.dart';
 

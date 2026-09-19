@@ -2,10 +2,19 @@ import 'package:flutter/material.dart';
 import '../../../core/services/api_service.dart';
 
 class HistoryItem {
+  final String? id;
   final String translation;
   final DateTime timestamp;
 
-  HistoryItem({required this.translation, required this.timestamp});
+  HistoryItem({this.id, required this.translation, required this.timestamp});
+
+  factory HistoryItem.fromMap(Map<String, String> map) {
+    return HistoryItem(
+      id: map['id'],
+      translation: map['translation'] ?? '',
+      timestamp: DateTime.tryParse(map['timestamp'] ?? '') ?? DateTime.now(),
+    );
+  }
 
   factory HistoryItem.fromString(String raw) {
     // Format: "translation|timestamp" or just "translation"
@@ -51,8 +60,8 @@ class TranslationProvider extends ChangeNotifier {
     _isLoadingHistory = true;
     notifyListeners();
     try {
-      final rawHistory = await ApiService.getHistory(userId, token ?? '');
-      _history = rawHistory.map((r) => HistoryItem.fromString(r)).toList();
+      final rawHistory = await ApiService.getHistory(token ?? '');
+      _history = rawHistory.map((r) => HistoryItem.fromMap(r)).toList();
     } catch (_) {
       _history = [];
     }
@@ -67,6 +76,33 @@ class TranslationProvider extends ChangeNotifier {
     );
     _history.insert(0, item);
     notifyListeners();
-    await ApiService.postHistory(userId, item.toStorageString(), token ?? '');
+    await ApiService.postHistory(translation, token ?? '');
+  }
+
+  Future<void> deleteHistoryItem(String id, {String? token}) async {
+    final index = _history.indexWhere((item) => item.id == id);
+    if (index == -1) return;
+    final removed = _history.removeAt(index);
+    notifyListeners();
+    try {
+      await ApiService.deleteHistoryItem(id, token ?? '');
+    } catch (_) {
+      _history.insert(index, removed);
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> clearHistory({String? token}) async {
+    final previousHistory = List<HistoryItem>.from(_history);
+    _history.clear();
+    notifyListeners();
+    try {
+      await ApiService.clearHistory(token ?? '');
+    } catch (_) {
+      _history = previousHistory;
+      notifyListeners();
+      rethrow;
+    }
   }
 }

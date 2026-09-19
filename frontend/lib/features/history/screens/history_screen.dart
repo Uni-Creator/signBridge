@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import '../../auth/poviders/auth_provider.dart';
+import '../../auth/providers/auth_provider.dart';
 import '../../translate/providers/translation_provider.dart';
 
 class HistoryScreen extends StatefulWidget {
@@ -26,6 +26,71 @@ class _HistoryScreenState extends State<HistoryScreen> {
     context.read<TranslationProvider>().loadHistory(userId, token: auth.token);
   }
 
+  Future<void> _confirmClearHistory() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Clear All History'),
+        content: const Text(
+          'Are you sure you want to delete all translation history? This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      final auth = context.read<AuthProvider>();
+      try {
+        await context
+            .read<TranslationProvider>()
+            .clearHistory(token: auth.token);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('History cleared')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to clear history: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _deleteItem(HistoryItem item) async {
+    final id = item.id;
+    if (id == null || id.isEmpty) return;
+    final auth = context.read<AuthProvider>();
+    try {
+      await context
+          .read<TranslationProvider>()
+          .deleteHistoryItem(id, token: auth.token);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Translation deleted')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final translationProvider = context.watch<TranslationProvider>();
@@ -42,11 +107,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
               color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
         ),
         actions: [
-          if (history.isNotEmpty)
+          if (history.isNotEmpty) ...[
+            IconButton(
+              icon: const Icon(Icons.delete_sweep_outlined, color: Colors.white),
+              tooltip: 'Clear History',
+              onPressed: _confirmClearHistory,
+            ),
             IconButton(
               icon: const Icon(Icons.refresh, color: Colors.white),
+              tooltip: 'Refresh',
               onPressed: _loadHistory,
             ),
+          ],
         ],
       ),
       body: translationProvider.isLoadingHistory
@@ -72,7 +144,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     separatorBuilder: (_, __) => const SizedBox(height: 10),
                     itemBuilder: (context, index) {
                       final item = history[index];
-                      return _HistoryCard(item: item, index: index);
+                      return _HistoryCard(
+                        item: item,
+                        index: index,
+                        onDelete: item.id != null && item.id!.isNotEmpty
+                            ? () => _deleteItem(item)
+                            : null,
+                      );
                     },
                   ),
                 ),
@@ -112,8 +190,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
 class _HistoryCard extends StatelessWidget {
   final HistoryItem item;
   final int index;
+  final VoidCallback? onDelete;
 
-  const _HistoryCard({required this.item, required this.index});
+  const _HistoryCard({
+    required this.item,
+    required this.index,
+    this.onDelete,
+  });
 
   static const primaryColor = Color(0xFF2B2D5D);
 
@@ -183,8 +266,25 @@ class _HistoryCard extends StatelessWidget {
               ],
             ),
           ),
-          const Icon(Icons.sign_language,
-              color: primaryColor, size: 18),
+          const SizedBox(width: 8),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.sign_language,
+                  color: primaryColor, size: 18),
+              if (onDelete != null) ...[
+                const SizedBox(width: 6),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline,
+                      size: 18, color: Colors.black38),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Delete',
+                  onPressed: onDelete,
+                ),
+              ],
+            ],
+          ),
         ],
       ),
     );

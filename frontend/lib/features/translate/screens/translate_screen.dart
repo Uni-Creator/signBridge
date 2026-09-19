@@ -7,7 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter/foundation.dart';
 import '../../../core/services/camera_frame_converter.dart';
 
-import '../../auth/poviders/auth_provider.dart';
+import '../../auth/providers/auth_provider.dart';
 import '../providers/translation_provider.dart';
 import '../../../core/services/websocket_service.dart';
 
