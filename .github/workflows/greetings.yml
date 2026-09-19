@@ -7,23 +7,24 @@ on:
 jobs:
   greeting:
     runs-on: ubuntu-latest
+
     permissions:
       issues: write
       pull-requests: write
 
     steps:
-      - uses: actions/first-interaction@v1.3.0
+      - uses: actions/first-interaction@v3.1.0
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
 
-          issue-message: |
+          issue_message: |
             Thanks for opening your first issue in SignBridge!
 
             We appreciate you taking the time to report a bug, suggest an improvement, or share feedback.
 
             Please provide as much relevant information as possible so we can investigate it effectively.
 
-          pr-message: |
+          pr_message: |
             Thanks for opening your first pull request to SignBridge!
 
             We appreciate your contribution to the project. Please make sure your changes are focused and include relevant tests where applicable.
