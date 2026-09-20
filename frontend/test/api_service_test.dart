@@ -129,6 +129,47 @@ void main() {
     });
   });
 
+    group('logout', () {
+    test('sends POST to /logout with bearer token', () async {
+      late http.Request captured;
+
+      await _run(
+        () => ApiService.logout('tok'),
+        (request) async {
+          captured = request;
+          return http.Response('', 200);
+        },
+      );
+
+      expect(captured.method, 'POST');
+      expect(captured.url.path, '/logout');
+      expect(captured.headers['Authorization'], 'Bearer tok');
+      expect(captured.headers['Content-Type'], 'application/json');
+    });
+
+    test('completes without throwing on a 2xx response', () async {
+      await expectLater(
+        _run(
+          () => ApiService.logout('tok'),
+          (request) async => http.Response('', 200),
+        ),
+        completes,
+      );
+    });
+
+    test('throws on a non-2xx response', () async {
+      final future = _run(
+        () => ApiService.logout('tok'),
+        (request) async => http.Response('', 401),
+      );
+
+      await expectLater(
+        future,
+        throwsA(isA<Exception>()),
+      );
+    });
+  });
+
   group('forgotPassword', () {
     test('posts to the correct endpoint', () async {
       late http.Request captured;
@@ -183,6 +224,75 @@ void main() {
         () => ApiService.forgotPassword('person@example.test'),
         (request) async => http.Response('{"success":"sent"}', 500),
       );
+      expect(result, isFalse);
+    });
+  });
+
+    group('updatePassword', () {
+    test('sends new password and bearer token', () async {
+      late http.Request captured;
+
+      final result = await _run(
+        () => ApiService.updatePassword('newPassword123', 'tok'),
+        (request) async {
+          captured = request;
+          return http.Response('{"success":true}', 200);
+        },
+      );
+
+      expect(result, isTrue);
+      expect(captured.method, 'POST');
+      expect(captured.url.path, '/update-password');
+      expect(captured.headers['Authorization'], 'Bearer tok');
+      expect(captured.headers['Content-Type'], 'application/json');
+      expect(
+        jsonDecode(captured.body),
+        {'password': 'newPassword123'},
+      );
+    });
+
+    test('returns true for string success response', () async {
+      final result = await _run(
+        () => ApiService.updatePassword('newPassword123', 'tok'),
+        (request) async => http.Response(
+          '{"success":"Password updated successfully."}',
+          200,
+        ),
+      );
+
+      expect(result, isTrue);
+    });
+
+    test('returns false when backend returns false', () async {
+      final result = await _run(
+        () => ApiService.updatePassword('newPassword123', 'tok'),
+        (request) async => http.Response(
+          '{"success":false}',
+          200,
+        ),
+      );
+
+      expect(result, isFalse);
+    });
+
+    test('returns false when success is missing', () async {
+      final result = await _run(
+        () => ApiService.updatePassword('newPassword123', 'tok'),
+        (request) async => http.Response('{}', 200),
+      );
+
+      expect(result, isFalse);
+    });
+
+    test('returns false on non-2xx response', () async {
+      final result = await _run(
+        () => ApiService.updatePassword('newPassword123', 'tok'),
+        (request) async => http.Response(
+          '{"error":"Invalid or expired token"}',
+          401,
+        ),
+      );
+
       expect(result, isFalse);
     });
   });

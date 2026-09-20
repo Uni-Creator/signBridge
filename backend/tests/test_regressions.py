@@ -27,9 +27,11 @@ from unittest.mock import MagicMock, mock_open, patch
 # these must already be loaded.
 import cv2  # noqa: F401
 import flask
+import firebase_admin
 import flask_limiter  # noqa: F401
 import flask_limiter.errors  # noqa: F401
 import flask_limiter.util  # noqa: F401
+import requests as real_requests
 import numpy
 from PIL import Image
 from dotenv import load_dotenv
@@ -90,6 +92,7 @@ class BackendRouteTests(unittest.TestCase):
     def setUp(self):
         self.auth = MagicMock()
         self.auth.ExpiredIdTokenError = type("ExpiredIdTokenError", (Exception,), {})
+        self.auth.RevokedIdTokenError = type("RevokedIdTokenError", (Exception,), {})
         self.auth.verify_id_token.return_value = {"uid": "alice"}
         self.authentication = MagicMock()
         self.history = MagicMock()
@@ -134,6 +137,22 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(body["error"], error)
         self.assertEqual(body["id"], "")
         self.assertEqual(body["token"], "")
+
+    def _assert_invalid_body(self, response, expected_errors):
+        """Assert a pydantic validate_body() rejection.
+
+        expected_errors is an ordered list of (field, message_substring) pairs
+        matching request.validated_data's field declaration order; pydantic
+        reports errors in that order.
+        """
+        self.assertEqual(response.status_code, 400)
+        body = json.loads(response.data)
+        self.assertEqual(body["error"], "Invalid request body")
+        details = body["details"]
+        self.assertEqual(len(details), len(expected_errors))
+        for (field, substring), detail in zip(expected_errors, details):
+            self.assertEqual(detail["field"], field)
+            self.assertIn(substring, detail["message"])
 
     # TESTS - app wiring
 
@@ -193,26 +212,39 @@ class BackendRouteTests(unittest.TestCase):
     def test_register_validation_errors(self):
         """Each malformed payload is rejected before the backend is called."""
         cases = [
-            ("empty body", {}, "Missing email"),
-            ("missing email", {"password": VALID_PASSWORD}, "Missing email"),
-            ("non-string email", {"email": 123, "password": VALID_PASSWORD}, "Email must be a string"),
-            ("malformed email", {"email": "not-an-email", "password": VALID_PASSWORD}, "Invalid email"),
-            ("short tld", {"email": "a@b.c", "password": VALID_PASSWORD}, "Invalid email"),
-            ("missing password", {"email": "a@b.com"}, "Missing password"),
-            ("non-string password", {"email": "a@b.com", "password": 123456}, "Password must be a string"),
+            ("empty body", {}, [("email", "Field required"), ("password", "Field required")]),
+            ("missing email", {"password": VALID_PASSWORD}, [("email", "Field required")]),
+            ("non-string email", {"email": 123, "password": VALID_PASSWORD},
+             [("email", "valid string")]),
+            ("malformed email", {"email": "not-an-email", "password": VALID_PASSWORD},
+             [("email", "valid email address")]),
+            ("missing password", {"email": "a@b.com"}, [("password", "Field required")]),
+            ("non-string password", {"email": "a@b.com", "password": 123456},
+             [("password", "valid string")]),
             ("short password", {"email": "a@b.com", "password": "12345"},
-             "Password must be at least 6 characters long"),
+             [("password", "at least 6 characters")]),
         ]
-        for label, payload, error in cases:
+        for label, payload, expected in cases:
             with self.subTest(label):
                 self.module.limiter.reset()  # 5/min limit would otherwise trip
-                self._assert_rejected(self.client.post("/register", json=payload), error)
+                self._assert_invalid_body(self.client.post("/register", json=payload), expected)
         self.authentication.register_account.assert_not_called()
 
+    def test_register_accepts_short_single_char_tld_email(self):
+        """pydantic's EmailStr treats a single-character TLD (e.g. 'a@b.c') as valid."""
+        self.authentication.register_account.return_value = {"id": "u", "token": "t"}
+        response = self.client.post(
+            "/register", json={"email": "a@b.c", "password": VALID_PASSWORD}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.authentication.register_account.assert_called_once_with("a@b.c", VALID_PASSWORD)
+
     def test_register_no_json_returns_400(self):
-        """POST /register with a non-JSON body is treated as a missing email."""
+        """POST /register with a non-JSON body is treated as an invalid (missing) body."""
         response = self.client.post("/register", data="not json", content_type="text/plain")
-        self._assert_rejected(response, "Missing email")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.data)["error"], "Invalid request body")
+        self.authentication.register_account.assert_not_called()
 
     def test_register_backend_failure_returns_400(self):
         """POST /register returns 400 with an error message when the backend returns None."""
@@ -247,22 +279,25 @@ class BackendRouteTests(unittest.TestCase):
 
     def test_login_validation_errors(self):
         cases = [
-            ("empty body", {}, "Missing email"),
-            ("missing email", {"password": VALID_PASSWORD}, "Missing email"),
-            ("malformed email", {"email": "nope", "password": VALID_PASSWORD}, "Invalid email"),
-            ("missing password", {"email": "a@b.com"}, "Missing password"),
+            ("empty body", {}, [("email", "Field required"), ("password", "Field required")]),
+            ("missing email", {"password": VALID_PASSWORD}, [("email", "Field required")]),
+            ("malformed email", {"email": "nope", "password": VALID_PASSWORD},
+             [("email", "valid email address")]),
+            ("missing password", {"email": "a@b.com"}, [("password", "Field required")]),
             ("short password", {"email": "a@b.com", "password": "pw"},
-             "Password must be at least 6 characters long"),
+             [("password", "at least 6 characters")]),
         ]
-        for label, payload, error in cases:
+        for label, payload, expected in cases:
             with self.subTest(label):
                 self.module.limiter.reset()
-                self._assert_rejected(self.client.post("/login", json=payload), error)
+                self._assert_invalid_body(self.client.post("/login", json=payload), expected)
         self.authentication.login_account.assert_not_called()
 
     def test_login_no_json_returns_400(self):
         response = self.client.post("/login", data="bad", content_type="text/plain")
-        self._assert_rejected(response, "Missing email")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.data)["error"], "Invalid request body")
+        self.authentication.login_account.assert_not_called()
 
     def test_login_backend_failure_returns_400(self):
         """POST /login returns 400 when the backend returns None (wrong credentials)."""
@@ -310,16 +345,16 @@ class BackendRouteTests(unittest.TestCase):
 
     def test_forgot_password_validation_errors(self):
         cases = [
-            ("empty body", {}, "Missing email"),
-            ("non-string email", {"email": ["a@b.com"]}, "Email must be a string"),
-            ("malformed email", {"email": "a@b"}, "Invalid email"),
+            ("empty body", {}, [("email", "Field required")]),
+            ("non-string email", {"email": ["a@b.com"]}, [("email", "valid string")]),
+            ("malformed email", {"email": "a@b"}, [("email", "valid email address")]),
         ]
-        for label, payload, error in cases:
+        for label, payload, expected in cases:
             with self.subTest(label):
                 self.module.limiter.reset()
-                response = self.client.post("/forgot-password", json=payload)
-                self.assertEqual(response.status_code, 400)
-                self.assertEqual(json.loads(response.data)["error"], error)
+                self._assert_invalid_body(
+                    self.client.post("/forgot-password", json=payload), expected
+                )
         self.authentication.forgot_password.assert_not_called()
 
     def test_forgot_password_no_json_returns_400(self):
@@ -374,9 +409,16 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(json.loads(response.data), {"error": "Token expired"})
         self.history.retrieve_history.assert_not_called()
 
-    def test_require_auth_passes_bare_token_to_verifier(self):
+    def test_require_auth_reports_revoked_tokens(self):
+        self.auth.verify_id_token.side_effect = self.auth.RevokedIdTokenError()
+        response = self.client.get("/history", headers={"Authorization": "Bearer old"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(json.loads(response.data), {"error": "Token revoked"})
+        self.history.retrieve_history.assert_not_called()
+
+    def test_require_auth_passes_bare_token_and_check_revoked_to_verifier(self):
         self.client.get("/history", headers={"Authorization": "Bearer abc.def.ghi"})
-        self.auth.verify_id_token.assert_called_once_with("abc.def.ghi")
+        self.auth.verify_id_token.assert_called_once_with("abc.def.ghi", check_revoked=True)
 
     # TESTS - REST: GET /history
 
@@ -435,7 +477,7 @@ class BackendRouteTests(unittest.TestCase):
         item = {"id": "-N1", "translation": "hello", "timestamp": "2025-01-01T00:00:00"}
         self.history.store_translation.return_value = item
         response = self.client.post(
-            "/history/store", json={"id": "bob", "translation": "hello"}, headers=AUTH
+            "/history/store", json={"translation": "hello"}, headers=AUTH
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(json.loads(response.data), item)
@@ -448,11 +490,32 @@ class BackendRouteTests(unittest.TestCase):
         self.history.store_translation.assert_called_once_with("carol", "world")
 
     def test_history_store_missing_translation_returns_400(self):
-        for payload in ({"id": "alice"}, {}):
+        cases = [
+            (
+                {"id": "alice"},
+                {
+                    "error": "Invalid request body",
+                    "details": [
+                        {"field": "translation", "message": "Field required"},
+                        {"field": "id", "message": "Extra inputs are not permitted"},
+                    ],
+                },
+            ),
+            (
+                {},
+                {
+                    "error": "Invalid request body",
+                    "details": [
+                        {"field": "translation", "message": "Field required"},
+                    ],
+                },
+            ),
+        ]
+        for payload, expected_body in cases:
             with self.subTest(payload=payload):
                 response = self.client.post("/history/store", json=payload, headers=AUTH)
                 self.assertEqual(response.status_code, 400)
-                self.assertEqual(json.loads(response.data), {"error": "Missing translation"})
+                self.assertEqual(json.loads(response.data), expected_body)
         self.history.store_translation.assert_not_called()
 
     def test_history_store_rejects_bodies_that_are_not_json(self):
@@ -1611,6 +1674,7 @@ class AuthenticationHelperTests(unittest.TestCase):
     def setUp(self):
         self.admin_auth = MagicMock()
         self.requests = MagicMock()
+        self.requests.RequestException = real_requests.RequestException
         self.mod = self._load_auth_module()
 
     def _load_auth_module(self, hosted=False, opened_paths=None):
@@ -1757,17 +1821,25 @@ class AuthenticationHelperTests(unittest.TestCase):
 
     def test_email_verify_success(self):
         self._respond({})
+
         result = self.mod.email_verify("id_token_123")
-        self.assertEqual(result, "Email verification link sent successfully.")
+
+        self.assertTrue(result)
+
         self.assertEqual(
             self.requests.post.call_args[1]["json"],
-            {"requestType": "VERIFY_EMAIL", "idToken": "id_token_123"},
+            {
+                "requestType": "VERIFY_EMAIL",
+                "idToken": "id_token_123",
+            },
         )
 
-    def test_email_verify_exception_returns_empty_string(self):
+
+    def test_email_verify_exception_returns_false(self):
         self._respond(status_error=RuntimeError("INVALID_ID_TOKEN"))
+
         with self.assertLogs(self.mod.logger, "ERROR"):
-            self.assertEqual(self.mod.email_verify("bad_token"), "")
+            self.assertFalse(self.mod.email_verify("bad_token"))
 
 
 if __name__ == "__main__":
