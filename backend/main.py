@@ -11,19 +11,19 @@ Endpoints:
   WS   /ws             -> Real-time sign detection
 """
 import os
-import base64
-import gc
+# import base64
+# import gc
 import json
 import logging
-import time
-from collections import deque
-from io import BytesIO
+# import time
+# from collections import deque
+# from io import BytesIO
 from dotenv import load_dotenv
 
 load_dotenv()
 
-import cv2
-import numpy as np
+# import cv2
+# import numpy as np
 
 import concurrent.futures
 from flask import Flask, request
@@ -32,6 +32,7 @@ from flask_sock import Sock
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_limiter.errors import RateLimitExceeded
+from pydantic import BaseModel, Field, EmailStr, ValidationError, ConfigDict
 
 import re
 
@@ -41,7 +42,7 @@ def get_user_id():
 
 
 #  App setup 
-from authentication import register_account, login_account, forgot_password
+from authentication import register_account, login_account, logout_user, forgot_password, update_password
 from history import retrieve_history, store_translation, delete_translation, delete_all_translations
 from websocket_handler import handle_websocket
 from model import ISLModelAPI
@@ -92,15 +93,83 @@ def require_auth(f):
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             return jsonify({"error": "Missing or invalid token"}), 401
+
+        token = auth_header.split(" ", 1)[1]
+
+        if not token:
+            return jsonify({
+                "error": "Missing or invalid token"
+            }), 401
         try:
-            decoded = admin_auth.verify_id_token(auth_header.split(" ", 1)[1])
+            decoded = admin_auth.verify_id_token(
+                token,
+                check_revoked=True
+            )
         except admin_auth.ExpiredIdTokenError:
             return jsonify({"error": "Token expired"}), 401
+        except admin_auth.RevokedIdTokenError:
+            return jsonify({"error": "Token revoked"}), 401
         except Exception:
             return jsonify({"error": "Invalid token"}), 401
         request.user_id = decoded["uid"]
         return f(*args, **kwargs)
     return wrapper
+
+class AuthRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+
+
+class ForgotPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=6, max_length=128)
+
+
+class StoreTranslationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    translation: str = Field(min_length=1, max_length=5000)
+
+
+def validate_body(model):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                data = request.get_json(silent=True)
+                validated = model.model_validate(data)
+
+            except ValidationError as e:
+                errors = []
+
+                for error in e.errors():
+                    field = ".".join(str(x) for x in error["loc"])
+
+                    errors.append({
+                        "field": field,
+                        "message": error["msg"]
+                    })
+
+                return jsonify({
+                    "error": "Invalid request body",
+                    "details": errors
+                }), 400
+
+            request.validated_data = validated
+            return func(*args, **kwargs)
+
+        return wrapper
+    return decorator
+
 
 
 @app.errorhandler(RateLimitExceeded)
@@ -110,65 +179,6 @@ def ratelimit_handler(e):
         "error": str(e.description)
     }), 429
 
-
-
-def check_type(check_password=True):
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            account = request.get_json(silent=True)
-
-            if not account or "email" not in account:
-                return jsonify({
-                    "id": "",
-                    "token": "",
-                    "error": "Missing email"
-                }), 400
-
-            if not isinstance(account["email"], str):
-                return jsonify({
-                    "id": "",
-                    "token": "",
-                    "error": "Email must be a string"
-                }), 400
-
-            if not re.match(
-                r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
-                account["email"]
-            ):
-                return jsonify({
-                    "id": "",
-                    "token": "",
-                    "error": "Invalid email"
-                }), 400
-
-            if check_password:
-                if "password" not in account:
-                    return jsonify({
-                        "id": "",
-                        "token": "",
-                        "error": "Missing password"
-                    }), 400
-
-                if not isinstance(account["password"], str):
-                    return jsonify({
-                        "id": "",
-                        "token": "",
-                        "error": "Password must be a string"
-                    }), 400
-
-                if len(account["password"]) < 6:
-                    return jsonify({
-                        "id": "",
-                        "token": "",
-                        "error": "Password must be at least 6 characters long"
-                    }), 400
-
-            return f(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
 
 
 #  REST routes 
@@ -184,11 +194,11 @@ def index():
     "5 per minute", 
     error_message="Too many registration attempts. Please try again later."
 )
-@check_type()
+@validate_body(AuthRequest)
 def register():
-    account = request.get_json(silent=True)
+    account = request.validated_data
 
-    res = register_account(account["email"], account["password"])
+    res = register_account(account.email, account.password)
 
     if not res:
         return json.dumps({
@@ -197,7 +207,7 @@ def register():
             "error": "Registration failed"
             }), 400
 
-    logger.info(f"Register: {account['email']} -> id={res['id']}")
+    logger.info(f"Register: {account.email} -> id={res['id']}")
     return json.dumps(res), 200
 
 
@@ -206,20 +216,44 @@ def register():
     "5 per minute", 
     error_message="Too many login attempts. Please try again later."
 )
-@check_type()
+@validate_body(AuthRequest)
 def login():
-    account = request.get_json(silent=True)
+    account = request.validated_data
 
-    res = login_account(account["email"], account["password"])
+    res = login_account(account.email, account.password)
     if not res:
         return json.dumps({
             "id": "", 
             "token": "",
             "error": "Login failed"
             }), 400
-    logger.info(f"Login: {account['email']} -> id={res['id']}")
+    logger.info(f"Login: user logged in using email")
     return json.dumps(res), 200
 
+
+
+@app.route("/logout", methods=["POST"])
+@require_auth
+@limiter.limit(
+    "10 per minute",
+    error_message="Too many logout requests. Please try again later."
+)
+def logout():
+    user_id = request.user_id
+
+    try:
+        logout_user(user_id)
+
+        return jsonify({
+            "message": "Logged out successfully"
+        }), 200
+
+    except Exception:
+        logger.exception("Failed to logout user")
+
+        return jsonify({
+            "error": "Logout failed"
+        }), 500
 
 
 @app.route("/forgot-password", methods=["POST"])
@@ -227,11 +261,11 @@ def login():
     "3 per minute", 
     error_message="Too many forgot password attempts. Please try again later."
 )
-@check_type(check_password=False)
+@validate_body(ForgotPasswordRequest)
 def forgot_pwd():
-    account = request.get_json(silent=True)
+    account = request.validated_data
 
-    forgot_password(account["email"])
+    forgot_password(account.email)
     
     logger.info("Password reset request received")
 
@@ -239,6 +273,31 @@ def forgot_pwd():
         "success": "Password reset email has been sent."
     }), 200
 
+
+
+@app.route("/update-password", methods=["POST"])
+@limiter.limit(
+    "3 per minute",
+    error_message="Too many password update attempts. Please try again later."
+)
+@require_auth
+@validate_body(ResetPasswordRequest)
+def update_pwd():
+    user_id = request.user_id
+    account = request.validated_data
+
+    status = update_password(user_id, account.password)
+
+    if not status:
+        return jsonify({
+            "error": "Password update failed."
+        }), 500
+
+    logger.info("Password updated successfully.")
+
+    return jsonify({
+        "success": "Password has been updated."
+    }), 200
 
 
 
@@ -273,18 +332,15 @@ def get_history():
     "50 per minute", 
     error_message="Too many store requests. Please try again later."
 )
+@validate_body(StoreTranslationRequest)
 def store_history():
     user_id = request.user_id
-
-    data = request.get_json()
-
-    if not data or "translation" not in data:
-        return jsonify({"error": "Missing translation"}), 400
+    data = request.validated_data
 
     try:
         item = store_translation(
             user_id,
-            data["translation"]
+            data.translation
         )
 
         return jsonify(item), 201

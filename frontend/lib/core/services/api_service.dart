@@ -70,6 +70,38 @@ class ApiService {
     };
   }
 
+  static Future<void> logout(String token) async {
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/logout'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+          },
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return;
+    }
+
+    var message = 'Logout failed';
+
+    if (response.body.isNotEmpty) {
+      try {
+        final data = jsonDecode(response.body);
+
+        if (data is Map && data['error'] != null) {
+          message = data['error'].toString();
+        }
+      } catch (_) {
+        // Ignore malformed error responses and use the default message.
+      }
+    }
+
+    throw Exception(message);
+  }
+
   static Future<bool> forgotPassword(
     String email,
   ) async {
@@ -81,6 +113,35 @@ class ApiService {
           },
           body: jsonEncode({
             'email': email,
+          }),
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300) {
+      return false;
+    }
+
+    final data = jsonDecode(response.body);
+    final success = data['success'];
+
+    return success == true ||
+        (success is String && success.trim().isNotEmpty);
+  }
+
+  static Future<bool> updatePassword(
+    String password,
+    String token,
+  ) async {
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/update-password'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode({
+            'password': password,
           }),
         )
         .timeout(const Duration(seconds: 10));
@@ -169,9 +230,11 @@ class ApiService {
     }
 
     Map<String, dynamic> data = {};
+
     if (response.body.isNotEmpty) {
       try {
         final decoded = jsonDecode(response.body);
+
         if (decoded is Map<String, dynamic>) {
           data = decoded;
         }
@@ -180,8 +243,10 @@ class ApiService {
 
     return {
       'id': data['id']?.toString() ?? '',
-      'translation': data['translation']?.toString() ?? translation,
-      'timestamp': data['timestamp']?.toString() ?? '',
+      'translation':
+          data['translation']?.toString() ?? translation,
+      'timestamp':
+          data['timestamp']?.toString() ?? '',
     };
   }
 
