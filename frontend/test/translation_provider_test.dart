@@ -116,13 +116,13 @@ void main() {
       });
 
       final provider = TranslationProvider();
-      int backendHitCount = 0;
+      // int backendHitCount = 0;
 
       // When loadHistory is called, it loads the persistent cache immediately
       await _run(
         () => provider.loadHistory('user1', token: 'tok1'),
         (request) async {
-          backendHitCount++;
+          // backendHitCount++;
           return http.Response(
             jsonEncode({'history': []}),
             200,
