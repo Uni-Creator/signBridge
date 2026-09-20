@@ -1,79 +1,193 @@
 # SignBridge API Documentation
 
-## Overview
-
-The SignBridge backend provides REST APIs for authentication and translation history, along with a WebSocket API for real-time sign-language recognition.
-
-### Base URL
-
-For local development:
-
-```text
-http://localhost:5000
-```
-
-For a physical device on the same network:
-
-```text
-http://<SERVER_IP>:5000
-```
-
-For an Android emulator:
-
-```text
-http://10.0.2.2:5000
-```
-
-The production base URL depends on the deployment environment.
+> **API REQUEST HANDLERS:** `main.py`, `authentication.py`, `history.py`, `websocket_handler.py`, `websocket_processing.py`, and the `postman/collections/sign_bridge`.
 
 ---
 
-# Authentication
+## Table of Contents
 
-SignBridge uses Firebase Authentication.
+1. [Overview](#overview)
+2. [Base URLs & Collection Variables](#base-urls--collection-variables)
+3. [Authentication](#authentication)
+4. [Rate Limits](#rate-limits)
+5. [Error Response Format](#error-response-format)
+6. [REST Endpoints](#rest-endpoints)
+   - [Health Check](#1-health-check)
+   - [Register](#2-register)
+   - [Login](#3-login)
+   - [Logout](#4-logout)
+   - [Forgot Password](#5-forgot-password)
+   - [Update Password](#6-update-password)
+   - [Get Translation History](#7-get-translation-history)
+   - [Store Translation](#8-store-translation)
+   - [Delete Translation](#9-delete-translation)
+   - [Clear History](#10-clear-history)
+7. [WebSocket API : Live Translation](#websocket-api--live-translation)
+   - [Connection](#connection)
+   - [Authentication](#websocket-authentication)
+   - [Server Messages After Connect](#server-messages-after-connect)
+   - [Configuration Messages (Client → Server)](#configuration-messages-client--server)
+   - [Frame Messages (Client → Server)](#frame-messages-client--server)
+   - [Prediction Response (Server → Client)](#prediction-response-server--client)
+   - [Error Messages (Server → Client)](#error-messages-server--client)
+   - [Disconnect](#disconnect)
+8. [Getting Started : Practical Sequence](#getting-started--practical-sequence)
+9. [Postman Collection Variables](#postman-collection-variables)
+10. [Collection Coverage](#collection-coverage)
+11. [Security Notes](#security-notes)
+12. [Running the Backend Locally](#running-the-backend-locally)
 
-Protected REST endpoints require a Firebase ID token in the `Authorization` header:
+---
+
+## Overview
+
+**SignBridge** is a Python/Flask backend that provides:
+
+- **REST APIs** for user authentication (Firebase) and translation history (Firebase Realtime Database).
+- **WebSocket API** (`/ws`) for real-time Indian Sign Language (ISL) recognition : the client streams camera frames and the server returns predicted sign labels.
+
+The backend is built with:
+
+| Component | Library |
+|---|---|
+| HTTP server | Flask 3.1 |
+| WebSocket | flask-sock 0.7 |
+| Auth | Firebase Admin SDK 7.5 |
+| Validation | Pydantic 2 |
+| Rate limiting | Flask-Limiter 4.1 |
+| ML pipeline | MediaPipe 0.10 + remote ISL model API |
+| Runtime | Python 3.10 |
+
+---
+
+## Base URLs & Collection Variables
+
+| Context | REST base URL | WebSocket base URL |
+|---|---|---|
+| Local development | `http://localhost:5000` | `ws://localhost:5000` |
+| Physical device (same LAN) | `http://<SERVER_IP>:5000` | `ws://<SERVER_IP>:5000` |
+| Android emulator | `http://10.0.2.2:5000` | `ws://10.0.2.2:5000` |
+| Production (Render / GCP) | Set via `PORT` env var (default `10000` for Gunicorn) | Same host, `wss://` |
+
+The Postman collection uses two variables:
+
+| Variable | Purpose | Example value |
+|---|---|---|
+| `{{base_url}}` | REST base URL (no trailing slash) | `http://localhost:5000` |
+| `{{live_url}}` | WebSocket base URL (no trailing slash) | `ws://localhost:5000` |
+
+Set both variables in your environment or directly in the collection before running requests.
+
+---
+
+## Authentication
+
+SignBridge uses **Firebase Authentication**. The backend never trusts a user-supplied ID : it always derives the user identity from a verified Firebase ID token.
+
+### Protected REST endpoints
+
+Add the following header to every protected request:
 
 ```http
 Authorization: Bearer <FIREBASE_ID_TOKEN>
 ```
 
-The backend verifies the token using Firebase Admin SDK.
+The backend verifies the token with Firebase Admin SDK (`check_revoked=True`) and extracts `decoded["uid"]` as the request's user identity.
 
-The authenticated Firebase UID is taken from the verified token:
+**Token error responses:**
 
-```text
-Firebase ID token
-        │
-        ▼
-Firebase Admin verification
-        │
-        ▼
-decoded["uid"]
-        │
-        ▼
-request.user_id
-```
+| Condition | Status | Body |
+|---|---|---|
+| Header missing or not `Bearer …` | `401` | `{"error": "Missing or invalid token"}` |
+| Token empty | `401` | `{"error": "Missing or invalid token"}` |
+| Token expired | `401` | `{"error": "Token expired"}` |
+| Token revoked | `401` | `{"error": "Token revoked"}` |
+| Any other invalid token | `401` | `{"error": "Invalid token"}` |
 
-Clients should not rely on sending a user ID to establish ownership of protected resources.
+### WebSocket endpoint
+
+The token is passed as a query parameter (see [WebSocket Authentication](#websocket-authentication)).
 
 ---
 
-# API Endpoints
+## Rate Limits
 
-## 1. Health Check
+Global defaults (all endpoints):
 
-### `GET /`
+```
+100 requests / minute
+5 000 requests / day
+```
 
-Returns a basic response confirming that the backend is running.
+Per-endpoint overrides:
 
-### Request
+| Endpoint | Limit | Error message |
+|---|---|---|
+| `POST /register` | 5 / min | `Too many registration attempts. Please try again later.` |
+| `POST /login` | 5 / min | `Too many login attempts. Please try again later.` |
+| `POST /logout` | 10 / min | `Too many logout requests. Please try again later.` |
+| `POST /forgot-password` | 3 / min | `Too many forgot password attempts. Please try again later.` |
+| `POST /update-password` | 3 / min | `Too many password update attempts. Please try again later.` |
+| `GET /history` | 20 / min | `Too many history requests. Please try again later.` |
+| `POST /history/store` | 50 / min | `Too many store requests. Please try again later.` |
+| `DELETE /history/<id>` | 50 / min | `Too many delete history requests. Please try again later.` |
+| `DELETE /history/clear` | 10 / min | `Too many clear requests. Please try again later.` |
+
+When a limit is exceeded the server returns:
 
 ```http
+429 Too Many Requests
+```
+
+```json
+{
+  "error": "<rate-limit error message>"
+}
+```
+
+---
+
+## Error Response Format
+
+All REST error responses are JSON objects with an `error` key:
+
+```json
+{
+  "error": "<human-readable message>"
+}
+```
+
+Validation errors additionally include a `details` array:
+
+```json
+{
+  "error": "Invalid request body",
+  "details": [
+    {
+      "field": "email",
+      "message": "value is not a valid email address"
+    }
+  ]
+}
+```
+
+---
+
+## REST Endpoints
+
+---
+
+### 1. Health Check
+
+**Collection request:** *(not in collection : backend-only endpoint)*
+
+```
 GET /
 ```
 
-### Response
+Confirms the server is running. No authentication required.
+
+**Response : 200 OK**
 
 ```json
 {
@@ -82,26 +196,27 @@ GET /
 }
 ```
 
-### Authentication
-
-Not required.
-
 ---
 
-# Authentication APIs
+### 2. Register
 
-## 2. Register
+**Collection request:** `register`
 
-### `POST /register`
-
-Creates a new Firebase user account.
-
-### Request
-
-```http
-POST /register
-Content-Type: application/json
 ```
+POST /register
+```
+
+Creates a new Firebase user account and returns a Firebase ID token.
+
+**Authentication:** Not required.
+
+**Request headers:**
+
+| Header | Value |
+|---|---|
+| `Content-Type` | `application/json` |
+
+**Request body:**
 
 ```json
 {
@@ -110,40 +225,28 @@ Content-Type: application/json
 }
 ```
 
-### Validation
+| Field | Type | Constraints |
+|---|---|---|
+| `email` | string | Required. Valid email format. |
+| `password` | string | Required. 6–128 characters. |
 
-The request must contain:
+Extra fields are rejected (`extra="forbid"`).
 
-- `email`
-- `password`
-
-The backend validates:
-
-- Email is present.
-- Email is a string.
-- Email follows the expected email format.
-- Password is present.
-- Password is a string.
-- Password contains at least 6 characters.
-
-### Success Response
-
-```http
-200 OK
-```
+**Response : 200 OK**
 
 ```json
 {
-  "id": "firebase-user-id",
-  "token": "firebase-id-token"
+  "id": "eF3JZDs8xjSv9hyzCt8D7qgRILC3",
+  "token": "<FIREBASE_ID_TOKEN>"
 }
 ```
 
-### Failure Response
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Firebase UID |
+| `token` | string | Firebase ID token (use as Bearer token) |
 
-```http
-400 Bad Request
-```
+**Response : 400 Bad Request** *(registration failed, e.g. email already exists)*
 
 ```json
 {
@@ -153,17 +256,16 @@ The backend validates:
 }
 ```
 
-### Rate Limit
+**Response : 400 Bad Request** *(validation error)*
 
-```text
-5 requests / minute
+```json
+{
+  "error": "Invalid request body",
+  "details": [{ "field": "email", "message": "..." }]
+}
 ```
 
-Exceeding the limit returns:
-
-```http
-429 Too Many Requests
-```
+**Response : 429 Too Many Requests**
 
 ```json
 {
@@ -171,20 +273,29 @@ Exceeding the limit returns:
 }
 ```
 
+**Postman automation:** After a successful response the collection's `afterResponse` script automatically sets `{{user_id}}` and `{{auth_token}}` collection variables.
+
 ---
 
-# 3. Login
+### 3. Login
 
-### `POST /login`
+**Collection request:** `login`
 
-Authenticates an existing Firebase user.
-
-### Request
-
-```http
-POST /login
-Content-Type: application/json
 ```
+POST /login
+```
+
+Authenticates an existing Firebase user and returns a fresh ID token.
+
+**Authentication:** Not required.
+
+**Request headers:**
+
+| Header | Value |
+|---|---|
+| `Content-Type` | `application/json` |
+
+**Request body:**
 
 ```json
 {
@@ -193,24 +304,21 @@ Content-Type: application/json
 }
 ```
 
-### Success Response
+| Field | Type | Constraints |
+|---|---|---|
+| `email` | string | Required. Valid email format. |
+| `password` | string | Required. 6–128 characters. |
 
-```http
-200 OK
-```
+**Response : 200 OK**
 
 ```json
 {
-  "id": "firebase-user-id",
-  "token": "firebase-id-token"
+  "id": "eF3JZDs8xjSv9hyzCt8D7qgRILC3",
+  "token": "<FIREBASE_ID_TOKEN>"
 }
 ```
 
-### Failure Response
-
-```http
-400 Bad Request
-```
+**Response : 400 Bad Request**
 
 ```json
 {
@@ -220,114 +328,47 @@ Content-Type: application/json
 }
 ```
 
-### Rate Limit
-
-```text
-5 requests / minute
-```
-
----
-
-# 4. Forgot Password
-
-### `POST /forgot-password`
-
-Requests a Firebase password-reset email.
-
-### Request
-
-```http
-POST /forgot-password
-Content-Type: application/json
-```
+**Response : 429 Too Many Requests**
 
 ```json
 {
-  "email": "user@example.com"
+  "error": "Too many login attempts. Please try again later."
 }
 ```
 
-### Success Response
-
-```http
-200 OK
-```
-
-```json
-{
-  "success": "Password reset email has been sent."
-}
-```
-
-The endpoint intentionally returns a generic confirmation instead of exposing Firebase-specific errors to the client.
-
-### Rate Limit
-
-```text
-3 requests / minute
-```
-
-This endpoint should remain generic to reduce the risk of email/account enumeration.
+**Postman automation:** Same as Register : sets `{{user_id}}` and `{{auth_token}}`.
 
 ---
 
-# History APIs
+### 4. Logout
 
-All history endpoints require authentication.
+**Collection request:** `logout`
 
-```http
-Authorization: Bearer <FIREBASE_ID_TOKEN>
+```
+POST /logout
 ```
 
-The backend obtains the user ID from the verified Firebase token.
+Revokes all refresh tokens for the authenticated user (Firebase Admin `revoke_refresh_tokens`). Existing ID tokens remain valid until they expire (typically 1 hour).
 
----
+**Authentication:** Required : Bearer token.
 
-# 5. Get Translation History
+**Request headers:**
 
-### `GET /history`
+| Header | Value |
+|---|---|
+| `Authorization` | `Bearer {{auth_token}}` |
 
-Returns the authenticated user's translation history.
+**Request body:** None.
 
-### Request
-
-```http
-GET /history
-Authorization: Bearer <FIREBASE_ID_TOKEN>
-```
-
-No user ID should be supplied through the query string.
-
-### Success Response
-
-```http
-200 OK
-```
+**Response : 200 OK**
 
 ```json
 {
-  "history": [
-    {
-      "id": "-Oabc123",
-      "translation": "hello",
-      "timestamp": "2026-09-20T03:20:15.123456"
-    },
-    {
-      "id": "-Oabc456",
-      "translation": "thank you",
-      "timestamp": "2026-09-20T03:18:42.123456"
-    }
-  ]
+  "message": "Logged out successfully"
 }
 ```
 
-### Authentication Failure
-
-```http
-401 Unauthorized
-```
-
-Possible responses:
+**Response : 401 Unauthorized** *(invalid/missing token)*
 
 ```json
 {
@@ -335,108 +376,276 @@ Possible responses:
 }
 ```
 
-or:
+**Response : 500 Internal Server Error**
 
 ```json
 {
-  "error": "Token expired"
+  "error": "Logout failed"
 }
-```
-
-or:
-
-```json
-{
-  "error": "Invalid token"
-}
-```
-
-### Rate Limit
-
-```text
-20 requests / minute
 ```
 
 ---
 
-# 6. Store Translation
+### 5. Forgot Password
 
-### `POST /history/store`
+**Collection request:** `forgot-password`
 
-Stores a translation in the authenticated user's history.
+```
+POST /forgot-password
+```
 
-### Request
+Sends a Firebase password-reset email to the given address. The endpoint always returns a success response regardless of whether the email exists, to prevent account enumeration.
 
-```http
+**Authentication:** Not required.
+
+**Request headers:**
+
+| Header | Value |
+|---|---|
+| `Content-Type` | `application/json` |
+
+**Request body:**
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+| Field | Type | Constraints |
+|---|---|---|
+| `email` | string | Required. Valid email format. |
+
+**Response : 200 OK**
+
+```json
+{
+  "success": "Password reset email has been sent."
+}
+```
+
+**Response : 429 Too Many Requests**
+
+```json
+{
+  "error": "Too many forgot password attempts. Please try again later."
+}
+```
+
+---
+
+### 6. Update Password
+
+**Collection request:** `update-password`
+
+```
+POST /update-password
+```
+
+Updates the password for the authenticated user (Firebase Admin `update_user`).
+
+**Authentication:** Required : Bearer token.
+
+**Request headers:**
+
+| Header | Value |
+|---|---|
+| `Authorization` | `Bearer {{auth_token}}` |
+| `Content-Type` | `application/json` |
+
+**Request body:**
+
+```json
+{
+  "password": "newSecurePassword1"
+}
+```
+
+| Field | Type | Constraints |
+|---|---|---|
+| `password` | string | Required. 6–128 characters. New password. |
+
+**Response : 200 OK**
+
+```json
+{
+  "success": "Password has been updated."
+}
+```
+
+**Response : 401 Unauthorized**
+
+```json
+{
+  "error": "Missing or invalid token"
+}
+```
+
+**Response : 500 Internal Server Error**
+
+```json
+{
+  "error": "Password update failed."
+}
+```
+
+**Postman automation:** On success the `afterResponse` script copies `{{new_pass}}` into `{{password}}` so subsequent login requests use the updated credential.
+
+---
+
+### 7. Get Translation History
+
+**Collection request:** `get history`
+
+```
+GET /history
+```
+
+Returns the authenticated user's translation history, sorted newest-first.
+
+**Authentication:** Required : Bearer token.
+
+**Request headers:**
+
+| Header | Value |
+|---|---|
+| `Authorization` | `Bearer {{auth_token}}` |
+
+**Query parameters:** None. Do not supply a user ID : the backend derives it from the token.
+
+**Response : 200 OK**
+
+```json
+{
+  "history": [
+    {
+      "id": "-P1zadqpuQu6dB7DPS9s",
+      "translation": "Something about you",
+      "timestamp": "2026-09-20T21:46:16.286476"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `history` | array | List of translation items, newest first. Empty array when no history exists. |
+| `history[].id` | string | Firebase Realtime Database push key. |
+| `history[].translation` | string | The stored sign translation text. |
+| `history[].timestamp` | string | ISO 8601 datetime (local server time). |
+
+**Response : 401 Unauthorized**
+
+```json
+{
+  "error": "Missing or invalid token"
+}
+```
+
+**Response : 500 Internal Server Error**
+
+```json
+{
+  "history": "",
+  "error": "Failed to retrieve history"
+}
+```
+
+---
+
+### 8. Store Translation
+
+**Collection request:** `store translation`
+
+```
 POST /history/store
-Authorization: Bearer <FIREBASE_ID_TOKEN>
-Content-Type: application/json
 ```
+
+Saves a translation string to the authenticated user's history in Firebase Realtime Database.
+
+**Authentication:** Required : Bearer token.
+
+**Request headers:**
+
+| Header | Value |
+|---|---|
+| `Authorization` | `Bearer {{auth_token}}` |
+| `Content-Type` | `application/json` |
+
+**Request body:**
 
 ```json
 {
-  "translation": "hello"
+  "translation": "Something about you"
 }
 ```
 
-The client does **not** need to send a user ID.
+| Field | Type | Constraints |
+|---|---|---|
+| `translation` | string | Required. 1–5 000 characters. |
 
-The backend determines the user from the verified Firebase token.
-
-### Success Response
-
-```http
-201 Created
-```
-
-Example:
+**Response : 201 Created**
 
 ```json
 {
-  "id": "-Oabc123",
-  "translation": "hello",
-  "timestamp": "2026-09-20T03:20:15.123456"
+  "id": "-P1zaRcQPKjyAnr-pAM2",
+  "timestamp": "2026-09-20T21:45:22.116040",
+  "translation": "Something about you"
 }
 ```
 
-### Missing Translation
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Firebase push key for this item. |
+| `timestamp` | string | ISO 8601 datetime. |
+| `translation` | string | The stored text. |
 
-```http
-400 Bad Request
-```
+**Response : 400 Bad Request** *(validation error)*
 
 ```json
 {
-  "error": "Missing translation"
+  "error": "Invalid request body",
+  "details": [{ "field": "translation", "message": "..." }]
 }
 ```
 
-### Rate Limit
+**Response : 500 Internal Server Error**
 
-```text
-50 requests / minute
+```json
+{
+  "error": "Failed to store history"
+}
 ```
+
+**Postman automation:** The `afterResponse` script sets `{{translation_id}}` to the returned `id`, enabling the Delete Translation request to run immediately after.
 
 ---
 
-# 7. Delete One Translation
+### 9. Delete Translation
 
-### `DELETE /history/<translation_id>`
+**Collection request:** `delete translation`
 
-Deletes one history item belonging to the authenticated user.
-
-### Request
-
-```http
-DELETE /history/-Oabc123
-Authorization: Bearer <FIREBASE_ID_TOKEN>
+```
+DELETE /history/{{translation_id}}
 ```
 
-### Success Response
+Deletes a single translation item from the authenticated user's history.
 
-```http
-200 OK
-```
+**Authentication:** Required : Bearer token.
+
+**Path variable:**
+
+| Variable | Description | Example |
+|---|---|---|
+| `translation_id` | Firebase push key of the item to delete | `-P1zaRcQPKjyAnr-pAM2` |
+
+**Request headers:**
+
+| Header | Value |
+|---|---|
+| `Authorization` | `Bearer {{auth_token}}` |
+
+**Response : 200 OK**
 
 ```json
 {
@@ -444,11 +653,7 @@ Authorization: Bearer <FIREBASE_ID_TOKEN>
 }
 ```
 
-### Translation Not Found
-
-```http
-404 Not Found
-```
+**Response : 404 Not Found** *(item does not exist or belongs to a different user)*
 
 ```json
 {
@@ -456,46 +661,39 @@ Authorization: Bearer <FIREBASE_ID_TOKEN>
 }
 ```
 
-### Authentication
+**Response : 500 Internal Server Error**
 
-Required.
-
-The backend uses:
-
-```text
-Firebase token → authenticated UID
+```json
+{
+  "error": "Failed to delete history"
+}
 ```
 
-and then attempts deletion under that user's history.
-
-A client cannot select another user's UID through the request.
-
-### Rate Limit
-
-```text
-50 requests / minute
-```
+**Postman automation:** The `afterResponse` script resets `{{translation_id}}` to an empty string.
 
 ---
 
-# 8. Clear Translation History
+### 10. Clear History
 
-### `DELETE /history/clear`
+**Collection request:** `clear history`
 
-Deletes all translation history belonging to the authenticated user.
-
-### Request
-
-```http
+```
 DELETE /history/clear
-Authorization: Bearer <FIREBASE_ID_TOKEN>
 ```
 
-### Success Response
+Deletes **all** translation history for the authenticated user.
 
-```http
-200 OK
-```
+**Authentication:** Required : Bearer token.
+
+**Request headers:**
+
+| Header | Value |
+|---|---|
+| `Authorization` | `Bearer {{auth_token}}` |
+
+**Request body:** None.
+
+**Response : 200 OK**
 
 ```json
 {
@@ -503,11 +701,7 @@ Authorization: Bearer <FIREBASE_ID_TOKEN>
 }
 ```
 
-### No History
-
-```http
-404 Not Found
-```
+**Response : 404 Not Found** *(no history exists)*
 
 ```json
 {
@@ -515,43 +709,40 @@ Authorization: Bearer <FIREBASE_ID_TOKEN>
 }
 ```
 
-### Rate Limit
+**Response : 500 Internal Server Error**
 
-```text
-10 requests / minute
+```json
+{
+  "error": "Failed to delete history"
+}
 ```
 
 ---
 
-# WebSocket API
+## WebSocket API : Live Translation
 
-## 9. Real-Time Sign Detection
+**Collection request:** `live translation`
 
-### `WS /ws`
+---
 
-Provides real-time sign-language recognition.
+### Connection
 
-The WebSocket connection requires a Firebase ID token.
-
-### Current Connection Format
-
-```text
-ws://<SERVER>/ws?token=<FIREBASE_ID_TOKEN>
+```
+WS  {{live_url}}/ws?token={{auth_token}}
+WSS <production-host>/ws?token=<FIREBASE_ID_TOKEN>
 ```
 
-Example:
+The Firebase ID token is passed as the `token` query parameter.
 
-```text
-ws://192.168.1.10:5000/ws?token=eyJhbGciOi...
-```
+> **Security note:** Query parameters can appear in server logs and browser history. In production, prefer `wss://` and consider a short-lived WebSocket-specific token rather than the long-lived Firebase ID token.
 
-> Production deployments should use `wss://` rather than `ws://`.
+---
 
-### Authentication
+### WebSocket Authentication
 
-The server verifies the Firebase ID token before accepting frames.
+On connection the server immediately verifies the `token` query parameter using Firebase Admin SDK.
 
-An invalid token results in:
+**If authentication fails:**
 
 ```json
 {
@@ -559,13 +750,15 @@ An invalid token results in:
 }
 ```
 
-The WebSocket connection is then closed.
+The connection is then closed (code `1000 Normal Closure`).
 
 ---
 
-# WebSocket Connection
+### Server Messages After Connect
 
-After successful authentication:
+After successful authentication the server sends one or more status messages:
+
+**Always sent:**
 
 ```json
 {
@@ -574,7 +767,7 @@ After successful authentication:
 }
 ```
 
-If MediaPipe is unavailable, the server may additionally send:
+**Sent when MediaPipe is unavailable** (memory-constrained server):
 
 ```json
 {
@@ -583,11 +776,20 @@ If MediaPipe is unavailable, the server may additionally send:
 }
 ```
 
+**Sent when the remote model API is still warming up:**
+
+```json
+{
+  "status": "api_warming",
+  "message": "Model API warming up, please wait..."
+}
+```
+
 ---
 
-# WebSocket Configuration
+### Configuration Messages (Client → Server)
 
-The client can change the inference mode using:
+The client can change the inference mode at any time during the session:
 
 ```json
 {
@@ -596,37 +798,27 @@ The client can change the inference mode using:
 }
 ```
 
-Supported modes:
+| Field | Type | Values |
+|---|---|---|
+| `type` | string | Must be `"config"` |
+| `mode` | string | `"frames"` · `"video"` · `"hybrid"` |
 
-```text
-frames
-video
-hybrid
-```
-
-### Example
-
-```json
-{
-  "type": "config",
-  "mode": "hybrid"
-}
-```
-
-The server responds with:
+**Server acknowledgement:**
 
 ```json
 {
   "status": "config_updated",
-  "mode": "hybrid"
+  "mode": "frames"
 }
 ```
 
+The default mode on connection is `"frames"`.
+
 ---
 
-# Sending Frames
+### Frame Messages (Client → Server)
 
-Frames are sent as JSON containing a Base64-encoded image:
+Send camera frames as JSON with a Base64-encoded image:
 
 ```json
 {
@@ -634,41 +826,41 @@ Frames are sent as JSON containing a Base64-encoded image:
 }
 ```
 
-The server:
+| Field | Type | Description |
+|---|---|---|
+| `frame` | string | Base64-encoded image (JPEG or PNG). |
 
-1. Parses the JSON.
-2. Extracts the `frame` field.
-3. Decodes Base64.
-4. Decodes the image.
-5. Converts it to RGB.
-6. Runs MediaPipe processing when enabled.
-7. Resizes the processed frame to `224 × 224`.
-8. Buffers frames.
-9. Runs inference after 16 frames are available.
+**Server-side frame processing pipeline:**
+
+1. Parse JSON and extract `frame`.
+2. Base64-decode the payload.
+3. Decode the image bytes into a PIL RGB image.
+4. Apply MediaPipe pose + hand landmark detection (when enabled).
+5. Resize the processed frame to **224 × 224** pixels.
+6. Append to a rolling frame buffer (capacity: **16 frames**).
+7. When the buffer reaches 16 frames, submit them to the remote ISL model API.
+8. Clear the buffer and await the inference result.
+9. Send the prediction back to the client.
+
+**Frame rate limiting:**
+
+The server enforces a minimum inter-frame interval of **0.08 s** (~12.5 frames/second). Frames arriving faster than this are silently discarded.
+
+**If a frame cannot be decoded:**
+
+```json
+{
+  "error": "Invalid frame"
+}
+```
+
+The connection remains open; the client can continue sending frames.
 
 ---
 
-# Frame Rate Limiting
+### Prediction Response (Server → Client)
 
-The server currently enforces:
-
-```text
-FRAME_DELAY = 0.08 seconds
-```
-
-This allows approximately:
-
-```text
-12.5 accepted frames / second / connection
-```
-
-Frames arriving faster than this are discarded.
-
----
-
-# WebSocket Prediction Response
-
-When inference produces a prediction:
+When inference completes and a sign is recognised:
 
 ```json
 {
@@ -677,303 +869,188 @@ When inference produces a prediction:
 }
 ```
 
-Where:
-
 | Field | Type | Description |
 |---|---|---|
-| `label` | string | Predicted sign |
-| `confidence` | number | Model confidence |
+| `label` | string | Predicted ISL sign label. |
+| `confidence` | number (float 0–1) | Model confidence score. |
+
+After a prediction is sent the frame buffer is cleared and the cycle restarts.
 
 ---
 
-# WebSocket Processing
+### Error Messages (Server → Client)
 
-The WebSocket architecture is divided into two layers.
-
-## `websocket_handler.py`
-
-Responsible for:
-
-- Firebase authentication
-- Connection lifecycle
-- Receiving messages
-- Configuration commands
-- Frame-rate limiting
-- Frame decoding
-- Frame buffering
-- Scheduling asynchronous processing
-- Returning predictions
-- Cleanup
-
-This separation is explicitly reflected in the handler implementation.
-
-## `websocket_processing.py`
-
-Responsible for:
-
-- MediaPipe
-- Landmark detection
-- Frame processing
-- Model inference
-- Optional test-video generation
-
-The WebSocket route in `main.py` therefore remains a thin controller:
-
-```python
-@sock.route("/ws")
-def websocket_translate(ws):
-    handle_websocket(ws, model_api, executor)
-```
-
----
-
-# Error Responses
-
-The REST API generally uses the following status codes:
-
-| Status | Meaning |
+| Message | Meaning |
 |---|---|
-| `200` | Request succeeded |
-| `201` | Resource created |
-| `400` | Invalid request |
-| `401` | Authentication required/failed |
-| `404` | Resource not found |
-| `429` | Rate limit exceeded |
-| `500` | Internal server error |
-
-Rate-limit failures are converted into JSON responses.
+| `{"error": "Unauthorized"}` | Token missing or invalid : connection will close. |
+| `{"error": "Invalid frame"}` | Frame could not be decoded : connection stays open. |
 
 ---
 
-# Security
+### Disconnect
 
-## Implemented
+The server closes the connection (code `1000 Normal Closure`) when:
 
-### Firebase Authentication
+- Authentication fails.
+- The client closes the connection.
+- No message is received for **30 seconds** (receive timeout).
+- An unhandled exception occurs in the connection loop.
 
-Protected endpoints verify Firebase ID tokens using Firebase Admin SDK.
-
-```text
-Authorization: Bearer <token>
-```
-
-The UID is extracted only after successful verification.
-
-### User Isolation
-
-History operations use:
-
-```python
-request.user_id
-```
-
-rather than trusting a user ID supplied by the client.
-
-This prevents a client from simply changing:
-
-```text
-?id=another-user
-```
-
-to access another user's history.
-
-### Rate Limiting
-
-Current endpoint limits:
-
-| Endpoint | Limit |
-|---|---:|
-| `POST /register` | 5/min |
-| `POST /login` | 5/min |
-| `POST /forgot-password` | 3/min |
-| `GET /history` | 20/min |
-| `POST /history/store` | 50/min |
-| `DELETE /history/<id>` | 50/min |
-| `DELETE /history/clear` | 10/min |
-
-The application also has default limits of:
-
-```text
-100 requests / minute
-5000 requests / day
-```
-
-
-
-### Input Validation
-
-Authentication endpoints validate email type, email format, password type, and minimum password length.
-
-### Generic Authentication Errors
-
-Invalid authentication tokens return generic errors rather than Firebase exception details.
-
-### WebSocket Authentication
-
-WebSocket clients must authenticate before frames are processed.
+On disconnect the server cancels any pending inference futures, closes MediaPipe detectors, and clears the frame buffer.
 
 ---
 
-# Security Considerations
+## Getting Started : Practical Sequence
 
-The following should be addressed before treating the WebSocket API as production-hardened.
+Follow these steps to go from zero to a live sign-language translation session using the Postman collection.
 
-## 1. Do not send Firebase tokens in URLs
+### Step 1 : Set collection variables
 
-Current:
+In the `sign_bridge` collection, set:
 
-```text
-/ws?token=<FIREBASE_ID_TOKEN>
-```
-
-Query parameters can potentially appear in:
-
-- reverse-proxy logs
-- access logs
-- monitoring systems
-- debugging tools
-- browser/network history
-
-The current implementation explicitly retrieves the token from the query string.
-
-Prefer an authenticated WebSocket handshake/header mechanism supported by the deployment stack, or use a short-lived WebSocket-specific token.
-
----
-
-## 2. Add WebSocket message-size limits
-
-The current frame decoder accepts a Base64 payload and decodes it without an explicit maximum payload size.
-
-A malicious client could send extremely large messages.
-
-Recommended controls:
-
-```text
-Maximum WebSocket message size
-Maximum Base64 payload size
-Maximum decoded image size
-Maximum image dimensions
-```
-
----
-
-## 3. Add image-dimension limits
-
-Before expensive MediaPipe processing, reject images exceeding a reasonable maximum width/height.
-
-For example:
-
-```text
-MAX_WIDTH
-MAX_HEIGHT
-MAX_PIXELS
-```
-
-This protects against memory-exhaustion attacks.
-
----
-
-## 4. Add WebSocket connection limits
-
-The current:
-
-```text
-FRAME_DELAY = 0.08
-```
-
-limits frames **per connection**.
-
-It does not prevent an attacker from opening many simultaneous WebSocket connections.
-
-Consider:
-
-```text
-Maximum connections per IP
-Maximum authenticated connections per UID
-Maximum global WebSocket connections
-Connection timeout
-```
-
----
-
-## 5. Use HTTPS/WSS in production
-
-Production deployment should use:
-
-```text
-https://
-```
-
-for REST APIs and:
-
-```text
-wss://
-```
-
-for WebSockets.
-
-Do not send Firebase tokens or camera frames over unencrypted `http://` / `ws://` in production.
-
----
-
-## 6. Firebase Realtime Database rules
-
-The Flask API authenticates users, but Firebase Database Rules should independently enforce user isolation if clients can access Firebase directly.
-
-The intended rule concept is:
-
-```text
-user/<uid>/history
-```
-
-should only be accessible when:
-
-```text
-auth.uid == uid
-```
-
----
-
-## 7. Production rate-limit storage
-
-Flask-Limiter should use a shared persistent backend when the application runs across multiple processes/instances.
-
-An in-memory/local limiter can otherwise result in limits being applied independently by different workers.
-
----
-
-## 8. Do not log sensitive information
-
-Avoid logging:
-
-- Firebase ID tokens
-- passwords
-- raw camera frames
-- Base64 image data
-- sensitive user information
-
-The current authentication routes log email addresses and Firebase IDs. Review is needed for whether these identifiers are necessary in production logs.
-
----
-
-# Security Status
-
-| Area | Current status |
+| Variable | Value |
 |---|---|
-| Firebase REST authentication | Implemented |
-| Firebase UID-based authorization | Implemented |
-| History IDOR protection | Implemented at API layer |
-| REST rate limiting | Implemented |
-| Input validation | Implemented |
-| Generic auth errors | Implemented |
-| WebSocket authentication | Implemented |
-| WebSocket frame throttling | Implemented |
-| WebSocket payload-size limit | **Missing** |
-| Image dimension/pixel limit | **Missing** |
-| WebSocket connection limit | **Missing** |
-| Token exposed in WebSocket URL | **Needs improvement** |
-| HTTPS/WSS enforcement | Deployment-dependent |
-| Firebase Database Rules | **Not verified** |
-| Distributed rate-limit storage | **Not verified** |
+| `base_url` | `http://localhost:5000` (or your server address) |
+| `live_url` | `ws://localhost:5000` |
+| `email` | `"your-test-email@example.com"` *(include the quotes : the request body uses `{{email}}` unquoted)* |
+| `password` | `"yourPassword123"` |
 
-The REST API has a reasonable authentication/authorization foundation. The main remaining security work is around **WebSocket resource exhaustion, credential transport, and deployment-level protections** rather than the basic Firebase authentication mechanism.
+### Step 2 : Register a new account
+
+Send **`POST /register`**.
+
+On success `{{user_id}}` and `{{auth_token}}` are set automatically by the collection script.
+
+### Step 3 : (Optional) Log in with an existing account
+
+Send **`POST /login`** if you already have an account. This also sets `{{auth_token}}`.
+
+### Step 4 : Store a translation
+
+Set `{{translation}}` to `"hello"` (include quotes), then send **`POST /history/store`**.
+
+`{{translation_id}}` is set automatically.
+
+### Step 5 : Retrieve history
+
+Send **`GET /history`** to confirm the stored item appears.
+
+### Step 6 : Delete the translation
+
+Send **`DELETE /history/{{translation_id}}`** to remove the item.
+
+### Step 7 : Connect to the WebSocket
+
+Open the **`live translation`** WebSocket request. The URL is pre-filled as `{{live_url}}/ws?token={{auth_token}}`.
+
+Click **Connect**. You should receive:
+
+```json
+{"status": "connected", "message": "Ready for frames"}
+```
+
+### Step 8 : Send frames
+
+Send Base64-encoded camera frames using the message format:
+
+```json
+{"frame": "<BASE64_IMAGE>"}
+```
+
+After every 16 accepted frames the server returns a prediction:
+
+```json
+{"label": "hello", "confidence": 0.92}
+```
+
+### Step 9 : Update password (optional)
+
+Set `{{new_pass}}` to `"newPassword456"` (with quotes), then send **`POST /update-password`**.
+
+### Step 10 : Log out
+
+Send **`POST /logout`** to revoke refresh tokens.
+
+---
+
+## Postman Collection Variables
+
+The `sign_bridge` collection defines the following variables (all start empty : set them before running):
+
+| Variable | Set by | Used by |
+|---|---|---|
+| `base_url` | User | All REST requests |
+| `live_url` | User | `live translation` WebSocket |
+| `email` | User | `register`, `login`, `forgot-password` |
+| `password` | User / `update-password` script | `register`, `login` |
+| `new_pass` | User | `update-password` |
+| `translation` | User | `store translation` |
+| `translation_id` | `store translation` script | `delete translation` |
+| `user_id` | `register` / `login` script | Reference only |
+| `auth_token` | `register` / `login` script | All protected requests |
+
+---
+
+## Security Notes
+
+| Area | Status |
+|---|---|
+| Firebase REST authentication | ✅ Implemented |
+| Firebase UID-based authorization | ✅ Implemented |
+| History IDOR protection | ✅ Implemented at API layer |
+| REST rate limiting | ✅ Implemented |
+| Input validation (Pydantic) | ✅ Implemented |
+| Generic auth error messages | ✅ Implemented |
+| WebSocket authentication | ✅ Implemented |
+| WebSocket frame throttling | ✅ Implemented |
+| WebSocket payload-size limit | ⚠️ Not implemented |
+| Image dimension/pixel limit | ⚠️ Not implemented |
+| WebSocket connection limit | ⚠️ Not implemented |
+| Token in WebSocket URL | ⚠️ Needs improvement (see note above) |
+| HTTPS / WSS enforcement | Deployment-dependent |
+| Firebase Database Rules | Not verified in this repo |
+| Distributed rate-limit storage | Not verified (in-memory default) |
+
+Do not expose `firebase.json`, `firebase-admin.json`, or any Firebase credentials in version control or client-side assets.
+
+---
+
+## Running the Backend Locally
+
+```bash
+# 1. Python 3.10 or 3.11 required
+python --version
+
+# 2. Create and activate a virtual environment
+python -m venv venv
+source venv/bin/activate          # Linux / macOS
+# .\venv\Scripts\activate         # Windows PowerShell
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure Firebase
+#    - Place your Firebase web config in backend/firebase.json
+#    - Place your service-account key in backend/firebase-admin.json
+#    (See backend_run_guide.md for the firebase.json template)
+
+# 5. Start the server
+python main.py
+# REST API  → http://127.0.0.1:5000/
+# WebSocket → ws://127.0.0.1:5000/ws
+
+# 6. Run offline regression tests (no credentials needed)
+python -m unittest discover -s tests -v
+```
+
+For production deployments the server is configured for **Gunicorn** (`gunicorn.conf.py`):
+
+```
+worker_class = gthread
+workers      = 1
+threads      = 4
+timeout      = 120
+bind         = 0.0.0.0:<PORT>   # PORT env var, default 10000
+```
+
+Google App Engine deployment is configured in `app.yaml` (Python 3.9 runtime, all routes → `main.app`).
