@@ -241,15 +241,27 @@ class _TranslateScreenState extends State<TranslateScreen>
     if (current.isEmpty) return;
     final userId = authProvider.userId ?? 'guest';
     final token = authProvider.token;
-    await translationProvider.saveTranslation(userId, current, token: token);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Translation saved to history!'),
-          backgroundColor: Color(0xFF2BB673),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    try {
+      await translationProvider.saveTranslation(userId, current, token: token);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Translation saved to history!'),
+            backgroundColor: Color(0xFF2BB673),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save translation: $e'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
 

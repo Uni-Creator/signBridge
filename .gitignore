@@ -24,6 +24,7 @@ migrate_working_dir/
 .pub/
 build/
 coverage/
+.idea
 
 # Symbolication related
 app.*.symbols

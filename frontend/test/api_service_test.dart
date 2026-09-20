@@ -299,6 +299,24 @@ void main() {
       );
     });
 
+    test('returns id, translation, and timestamp when provided in response', () async {
+      final result = await _run(
+        () => ApiService.postHistory('hello', 'tok'),
+        (request) async => http.Response(
+          jsonEncode({
+            'id': 'hist_123',
+            'translation': 'hello',
+            'timestamp': '2026-09-20T12:00:00.000Z',
+          }),
+          201,
+        ),
+      );
+
+      expect(result['id'], 'hist_123');
+      expect(result['translation'], 'hello');
+      expect(result['timestamp'], '2026-09-20T12:00:00.000Z');
+    });
+
     test('throws using the error field when present', () async {
       final future = _run(
         () => ApiService.postHistory('hello', 'tok'),

@@ -140,7 +140,7 @@ class ApiService {
         .toList();
   }
 
-  static Future<void> postHistory(
+  static Future<Map<String, String>> postHistory(
     String translation,
     String token,
   ) async {
@@ -167,6 +167,22 @@ class ApiService {
             'Failed to store history',
       );
     }
+
+    Map<String, dynamic> data = {};
+    if (response.body.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map<String, dynamic>) {
+          data = decoded;
+        }
+      } catch (_) {}
+    }
+
+    return {
+      'id': data['id']?.toString() ?? '',
+      'translation': data['translation']?.toString() ?? translation,
+      'timestamp': data['timestamp']?.toString() ?? '',
+    };
   }
 
   static Future<void> deleteHistoryItem(

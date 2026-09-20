@@ -17,13 +17,24 @@ class _HistoryScreenState extends State<HistoryScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadHistory());
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _loadHistory(force: false));
   }
 
-  void _loadHistory() {
+  Future<void> _loadHistory({bool force = false}) async {
     final auth = context.read<AuthProvider>();
     final userId = auth.userId ?? 'guest';
-    context.read<TranslationProvider>().loadHistory(userId, token: auth.token);
+    try {
+      await context
+          .read<TranslationProvider>()
+          .loadHistory(userId, token: auth.token, force: force);
+    } catch (e) {
+      if (mounted && force) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to refresh history: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _confirmClearHistory() async {
@@ -85,7 +96,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to delete: $e')),
+          SnackBar(
+            content: Text('Failed to delete: $e. Item restored.'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -116,7 +130,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
             IconButton(
               icon: const Icon(Icons.refresh, color: Colors.white),
               tooltip: 'Refresh',
-              onPressed: _loadHistory,
+              onPressed: () => _loadHistory(force: true),
             ),
           ],
         ],
@@ -136,7 +150,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ? _emptyState()
               : RefreshIndicator(
                   color: primaryColor,
-                  onRefresh: () async => _loadHistory(),
+                  onRefresh: () => _loadHistory(force: true),
                   child: ListView.separated(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
