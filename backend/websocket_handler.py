@@ -24,6 +24,7 @@ import base64
 import concurrent.futures
 import gc
 import json
+import threading
 import logging
 import time
 from collections import deque
@@ -272,6 +273,49 @@ def send_inference_result(
     return True
 
 
+# watcher function
+def watch_inference_future(
+    ws,
+    future,
+    mode,
+    result_event,
+):
+    """
+    Wait for a background inference future and immediately send its
+    result to the WebSocket client.
+
+    This prevents inference results from depending on another incoming
+    WebSocket frame.
+    """
+
+    try:
+        result = future.result()
+
+        logger.info(
+            "Inference future completed: %s",
+            result,
+        )
+
+        send_inference_result(
+            ws,
+            result,
+            mode,
+        )
+
+    except concurrent.futures.CancelledError:
+        logger.info(
+            "Inference future was cancelled."
+        )
+
+    except Exception:
+        logger.exception(
+            "Inference future watcher failed."
+        )
+
+    finally:
+        result_event.set()
+
+
 # Main WebSocket controller
 
 def handle_websocket(
@@ -331,8 +375,7 @@ def handle_websocket(
     user_id = decoded["uid"]
 
     logger.info(
-        "WebSocket client connected: %s",
-        user_id,
+        "WebSocket client connected",
     )
 
     send_json(
@@ -373,6 +416,12 @@ def handle_websocket(
     last_prediction_future = None
 
     landmark_future = None
+
+    # Signals that the background inference watcher has completed.
+    inference_result_event = threading.Event()
+
+    # Prevent multiple watcher threads for the same inference.
+    inference_watcher_thread = None
 
     frame_count = 0
 
@@ -440,14 +489,156 @@ def handle_websocket(
             if not message:
                 break
 
+            # Parse control messages before attempting frame decoding.
+
+            try:
+                message_data = json.loads(message)
+            except (json.JSONDecodeError, TypeError):
+                message_data = None
+
             # Configuration message
 
-            if handle_config_message(
-                message,
-                config,
-                ws,
+            if (
+                isinstance(message_data, dict)
+                and message_data.get("type") == "config"
             ):
-                continue
+                if handle_config_message(
+                    message,
+                    config,
+                    ws,
+                ):
+                    continue
+
+            # End-of-stream message
+
+            if (
+                isinstance(message_data, dict)
+                and message_data.get("type") == "end"
+            ):
+                logger.info(
+                    "End-of-stream received after %d frames.",
+                    frame_count,
+                )
+
+                # Finish any pending landmark processing.
+
+                if landmark_future is not None:
+                    try:
+                        processed_image = landmark_future.result()
+
+                        resized = processed_image.resize(
+                            (
+                                RESIZE_DIM,
+                                RESIZE_DIM,
+                            )
+                        )
+
+                        frame_buffer.append(resized)
+
+                        del processed_image
+                        del resized
+
+                        logger.info(
+                            "Final landmark job collected. "
+                            "Buffered frames: %d/%d",
+                            len(frame_buffer),
+                            CLIP_LENGTH,
+                        )
+
+                    except Exception:
+                        logger.exception(
+                            "Final landmark processing failed."
+                        )
+
+                    finally:
+                        landmark_future = None
+
+                # Submit final inference.
+
+                if (
+                    len(frame_buffer) >= CLIP_LENGTH
+                    and last_prediction_future is None
+                ):
+                    frames_copy = list(frame_buffer)
+
+                    frame_buffer.clear()
+
+                    logger.info(
+                        "Submitting final inference with %d frames.",
+                        len(frames_copy),
+                    )
+
+                    last_prediction_future = executor.submit(
+                        run_inference,
+                        frames_copy,
+                        config["mode"],
+                        model_api,
+                        SAVE_TEST_VIDEOS,
+                    )
+
+                    del frames_copy
+
+                # Wait for final inference and send the result.
+
+                if last_prediction_future is not None:
+                    try:
+                        result = last_prediction_future.result()
+
+                        logger.info(
+                            "Final inference result: %s",
+                            result,
+                        )
+
+                        prediction_sent = send_inference_result(
+                            ws,
+                            result,
+                            config["mode"],
+                        )
+
+                        if prediction_sent:
+                            logger.info(
+                                "Final prediction sent to WebSocket client."
+                            )
+                        else:
+                            logger.warning(
+                                "Final inference completed without a prediction."
+                            )
+
+                    except Exception:
+                        logger.exception(
+                            "Final inference failed."
+                        )
+
+                        send_json(
+                            ws,
+                            {
+                                "error": "Inference failed",
+                            },
+                        )
+
+                    finally:
+                        last_prediction_future = None
+
+                else:
+                    logger.warning(
+                        "End-of-stream received with only %d/%d frames.",
+                        len(frame_buffer),
+                        CLIP_LENGTH,
+                    )
+
+                    send_json(
+                        ws,
+                        {
+                            "error": "Not enough frames for inference",
+                            "frames": len(frame_buffer),
+                            "required": CLIP_LENGTH,
+                        },
+                    )
+
+                # We are finished with this video.
+                break
+
+            # Everything that reaches this point is expected to be a frame.
 
             # Frame rate limiter
 
@@ -540,37 +731,18 @@ def handle_websocket(
 
             # Collect completed inference
 
+            # The inference watcher sends completed predictions directly.
+            #
+            # We only clear the future reference here when the watcher has
+            # completed.
+
             if (
                 last_prediction_future is not None
-                and last_prediction_future.done()
+                and inference_result_event.is_set()
             ):
-
-                try:
-
-                    result = (
-                        last_prediction_future.result()
-                    )
-
-                    prediction_sent = (
-                        send_inference_result(
-                            ws,
-                            result,
-                            config["mode"],
-                        )
-                    )
-
-                    if prediction_sent:
-                        frame_buffer.clear()
-
-                except Exception:
-
-                    logger.exception(
-                        "Inference result handling failed."
-                    )
-
-                finally:
-
-                    last_prediction_future = None
+                last_prediction_future = None
+                inference_result_event.clear()
+                inference_watcher_thread = None
 
             # Start inference when enough frames exist
 
@@ -586,15 +758,39 @@ def handle_websocket(
 
                 frame_buffer.clear()
 
-                last_prediction_future = (
-                    executor.submit(
-                        run_inference,
-                        frames_copy,
-                        config["mode"],
-                        model_api,
-                        SAVE_TEST_VIDEOS,
-                    )
+                last_prediction_future = executor.submit(
+                    run_inference,
+                    frames_copy,
+                    config["mode"],
+                    model_api,
+                    SAVE_TEST_VIDEOS,
                 )
+
+                logger.info(
+                    "Inference submitted with %d frames.",
+                    len(frames_copy),
+                )
+
+                # Start a dedicated watcher.
+                #
+                # The receive loop must not be responsible for discovering that
+                # inference has completed.
+
+                inference_result_event.clear()
+
+                inference_watcher_thread = threading.Thread(
+                    target=watch_inference_future,
+                    args=(
+                        ws,
+                        last_prediction_future,
+                        config["mode"],
+                        inference_result_event,
+                    ),
+                    daemon=True,
+                    name="ws-inference-watcher",
+                )
+
+                inference_watcher_thread.start()
 
                 del frames_copy
 
@@ -615,8 +811,12 @@ def handle_websocket(
         # Cancel pending inference
 
         if last_prediction_future is not None:
+            if not last_prediction_future.done():
+                logger.info(
+                    "Cancelling pending inference during disconnect."
+                )
 
-            last_prediction_future.cancel()
+                last_prediction_future.cancel()
 
         # Finish/cancel pending landmark processing
 
@@ -659,6 +859,5 @@ def handle_websocket(
         frame_buffer.clear()
 
         logger.info(
-            "WebSocket client disconnected: %s",
-            user_id,
+            "WebSocket client disconnected",
         )

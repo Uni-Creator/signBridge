@@ -73,3 +73,105 @@ python -m unittest discover -s backend/tests -v
 ```
 
 The tests require Flask, NumPy and Pillow. They replace Firebase, the remote model API, MediaPipe and WebSocket transport with test doubles; no credentials or network calls are needed. They exercise real Flask request handling and the frame-processing loop. A live Firebase and camera smoke test is still needed before deployment.
+
+
+## WebSockets API Test
+
+First, log in using a dummy account to obtain the Firebase JWT token.
+
+Store the token in the `.env` file:
+
+```env
+JWT_TOKEN=your_jwt_token_here
+```
+
+The WebSocket test reads the token automatically from `.env`.
+
+Run the WebSocket API end-to-end test from the `backend` directory:
+
+```bash
+python tests/test_websockets_api.py
+```
+
+**Note:** Ensure that a video file named `temp/test.mov` exists in the `backend` directory.
+
+### Expected Result
+
+```text
+======================================================================
+SIGNBRIDGE WEBSOCKET END-TO-END TEST
+======================================================================
+WebSocket : ws://127.0.0.1:5000/ws?token=<JWT_TOKEN>
+Video     : temp/test.mov
+Video FPS : 10.00
+Send FPS  : 10.00
+Clip size : 16 frames
+======================================================================
+
+[1/5] WebSocket connected
+[2/5] Waiting for server authentication...
+
+----------------------------------------------------------------------
+SERVER RESPONSE #1
+----------------------------------------------------------------------
+{
+  "status": "connected",
+  "message": "Ready for frames"
+}
+[OK] Server authenticated the client
+
+[3/5] Streaming video frames
+
+Frames sent:    1
+----------------------------------------------------------------------
+SERVER RESPONSE #2
+----------------------------------------------------------------------
+{
+  "status": "info",
+  "message": "Landmarks disabled on this server (memory limit). Accuracy may be lower."
+}
+
+[SERVER INFO] Landmarks disabled on this server (memory limit). Accuracy may be lower.
+Frames sent:   33
+
+[OK] Finished sending 33 frames
+[3.5/5] Sending end-of-stream...
+[OK] End-of-stream sent
+
+[4/5] Waiting for model inference...
+
+----------------------------------------------------------------------
+SERVER RESPONSE #3
+----------------------------------------------------------------------
+{
+  "label": "afternoon",
+  "confidence": 0.9942461848258972
+}
+
+======================================================================
+MODEL INFERENCE RESULT
+======================================================================
+Prediction : afternoon
+Confidence : 0.9942 (99.42%)
+
+======================================================================
+END-TO-END TEST RESULT
+======================================================================
+Authentication : PASS
+Frames sent    : 33
+Server replies : 3
+Inference      : PASS
+Saved responses: websocket_results.json
+
+======================================================================
+INFERENCE RESULTS
+======================================================================
+
+Result #1
+{
+  "label": "afternoon",
+  "confidence": 0.9942461848258972
+}
+```
+
+**Expected outcome:** Authentication succeeds, all video frames are transmitted, the server processes the final 16-frame clip, and a model inference result containing `label` and `confidence` is received.

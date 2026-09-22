@@ -207,7 +207,7 @@ def register():
             "error": "Registration failed"
             }), 400
 
-    logger.info(f"Register: {account.email} -> id={res['id']}")
+    logger.info(f"Registered user")
     return json.dumps(res), 200
 
 

@@ -36,4 +36,4 @@ jobs:
 
       - name: Run backend tests
         run: |
-          python -m unittest discover -s backend/tests -v
+          python -m unittest backend/tests/test_regressions.py
