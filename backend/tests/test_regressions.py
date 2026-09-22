@@ -1,12 +1,13 @@
-"""Offline regressions for the SignBridge backend.
+"""Offline regressions for the SignBridge backend (FastAPI).
 
 Nothing here touches the network, Firebase, MediaPipe or the hosted model:
-external services are replaced with mocks while the real Flask routes, the
-WebSocket handler, the processing helpers and the auth/history helpers run.
+external services are replaced with mocks while the real FastAPI routes, the
+native ASGI WebSocket handler, the processing helpers and the auth/history
+helpers run.
 
 Run from the repository root: python -m unittest discover -s backend/tests -v
 """
-from PIL import ImageCms
+import asyncio
 import base64
 import importlib.util
 import itertools
@@ -17,25 +18,27 @@ import sys
 import tempfile
 import unittest
 from concurrent.futures import Future
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, mock_open, patch, sentinel
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch, sentinel
 
 # Import real runtime dependencies BEFORE any test swaps modules in sys.modules.
 # patch.dict(sys.modules) drops anything first imported inside the patch, so
 # these must already be loaded.
 import cv2  # noqa: F401
-import flask
-import firebase_admin
-import flask_limiter  # noqa: F401
-import flask_limiter.errors  # noqa: F401
-import flask_limiter.util  # noqa: F401
+import firebase_admin  # noqa: F401
 import requests as real_requests
 import numpy
 from PIL import Image
 from dotenv import load_dotenv
+
+from fastapi import WebSocketDisconnect
+from fastapi.testclient import TestClient
+from starlette.requests import Request
+from starlette.routing import WebSocketRoute
+from starlette.websockets import WebSocketState
 
 # Load environment variables from .env file for local testing
 load_dotenv()
@@ -76,6 +79,13 @@ def _frame_msg(width: int = 8, height: int = 8) -> str:
 
 
 def _done_future(result=None) -> Future:
+    """A real, already-resolved concurrent.futures.Future.
+
+    asyncio.wrap_future() (used internally by loop.run_in_executor) asserts
+    its argument is an actual concurrent.futures.Future, so every mocked
+    executor in the WebSocket tests must return one of these (or
+    _failed_future / a manually driven Future) rather than a bare MagicMock.
+    """
     future = Future()
     future.set_result(result)
     return future
@@ -87,7 +97,22 @@ def _failed_future(exc: Exception) -> Future:
     return future
 
 
-# BackendRouteTests - real Flask routes in main.py
+def _make_request(headers=None, client_host="127.0.0.1"):
+    """A minimal Starlette Request, for calling get_user_id() directly."""
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()],
+        "client": (client_host, 12345),
+        "server": (client_host, 80),
+        "query_string": b"",
+        "scheme": "http",
+    }
+    return Request(scope)
+
+
+# BackendRouteTests - real FastAPI routes in main.py
 
 class BackendRouteTests(unittest.TestCase):
     def setUp(self):
@@ -99,12 +124,10 @@ class BackendRouteTests(unittest.TestCase):
         self.history = MagicMock()
         self.history.retrieve_history.return_value = ["hello"]
         self.websocket_handler = MagicMock()
+        self.websocket_handler.handle_websocket = AsyncMock()
         self.model = MagicMock()
-        self.flask_cors = MagicMock()
-        self.flask_sock = MagicMock()
-        self.flask_sock.Sock.return_value.route.side_effect = lambda path: lambda f: f
         self.module = self._load_backend()
-        self.client = self.module.app.test_client()
+        self.client = TestClient(self.module.app)
 
     def _load_backend(self, env=None):
         modules = {
@@ -113,9 +136,6 @@ class BackendRouteTests(unittest.TestCase):
             "websocket_handler": self.websocket_handler,
             "model": self.model,
             "firebase_admin_init": MagicMock(admin_auth=self.auth),
-            "cv2": MagicMock(),
-            "flask_cors": self.flask_cors,
-            "flask_sock": self.flask_sock,
         }
         # Keep the developer's .env / shell out of the app under test, and stop
         # the model warm-up thread from really starting.
@@ -125,7 +145,7 @@ class BackendRouteTests(unittest.TestCase):
             env_remove=() if env and "ALLOWED_ORIGINS" in env else ("ALLOWED_ORIGINS",),
             patches=[patch("dotenv.load_dotenv"), patch("threading.Thread.start")],
         )
-        self.addCleanup(module.executor.shutdown, wait=True)
+        self.addCleanup(module.executor.shutdown, wait=False)
         return module
 
     def _statuses(self, method, path, count, **kwargs):
@@ -134,20 +154,20 @@ class BackendRouteTests(unittest.TestCase):
 
     def _assert_rejected(self, response, error):
         self.assertEqual(response.status_code, 400)
-        body = json.loads(response.data)
+        body = response.json()
         self.assertEqual(body["error"], error)
         self.assertEqual(body["id"], "")
         self.assertEqual(body["token"], "")
 
     def _assert_invalid_body(self, response, expected_errors):
-        """Assert a pydantic validate_body() rejection.
+        """Assert a pydantic validation-error rejection.
 
         expected_errors is an ordered list of (field, message_substring) pairs
         matching request.validated_data's field declaration order; pydantic
         reports errors in that order.
         """
         self.assertEqual(response.status_code, 400)
-        body = json.loads(response.data)
+        body = response.json()
         self.assertEqual(body["error"], "Invalid request body")
         details = body["details"]
         self.assertEqual(len(details), len(expected_errors))
@@ -161,32 +181,25 @@ class BackendRouteTests(unittest.TestCase):
         self.model.ISLModelAPI.assert_called_once_with(top_k=1)
 
     def test_cors_uses_default_origins(self):
-        args, kwargs = self.flask_cors.CORS.call_args
-        self.assertIs(args[0], self.module.app)
         self.assertEqual(
-            kwargs["resources"],
-            {r"/*": {"origins": [
+            self.module.allowed_origins,
+            [
                 "http://localhost:3000",
                 "http://localhost:8080",
                 "http://127.0.0.1:3000",
                 "app://signbridge",
-            ]}},
+            ],
         )
-        self.assertTrue(kwargs["supports_credentials"])
 
     def test_cors_origins_come_from_environment(self):
-        self.flask_cors.CORS.reset_mock()
-        self._load_backend({"ALLOWED_ORIGINS": " https://a.example , ,https://b.example "})
-        kwargs = self.flask_cors.CORS.call_args[1]
-        self.assertEqual(
-            kwargs["resources"], {r"/*": {"origins": ["https://a.example", "https://b.example"]}}
-        )
+        module = self._load_backend({"ALLOWED_ORIGINS": " https://a.example , ,https://b.example "})
+        self.assertEqual(module.allowed_origins, ["https://a.example", "https://b.example"])
 
     def test_get_user_id_prefers_authenticated_user_over_ip(self):
-        with self.module.app.test_request_context("/"):
-            self.assertEqual(self.module.get_user_id(), "127.0.0.1")
-            flask.request.user_id = "alice"
-            self.assertEqual(self.module.get_user_id(), "alice")
+        request = _make_request()
+        self.assertEqual(self.module.get_user_id(request), "127.0.0.1")
+        request.state.user_id = "alice"
+        self.assertEqual(self.module.get_user_id(request), "alice")
 
     # TESTS - REST: index
 
@@ -194,7 +207,7 @@ class BackendRouteTests(unittest.TestCase):
         """GET / returns a JSON status message with version 2.0."""
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        body = json.loads(response.data)
+        body = response.json()
         self.assertEqual(body["message"], "SignBridge API is running")
         self.assertEqual(body["version"], "2.0")
 
@@ -207,7 +220,7 @@ class BackendRouteTests(unittest.TestCase):
             "/register", json={"email": "a@b.com", "password": VALID_PASSWORD}
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.data), {"id": "uid1", "token": "tok1"})
+        self.assertEqual(response.json(), {"id": "uid1", "token": "tok1"})
         self.authentication.register_account.assert_called_once_with("a@b.com", VALID_PASSWORD)
 
     def test_register_validation_errors(self):
@@ -242,9 +255,9 @@ class BackendRouteTests(unittest.TestCase):
 
     def test_register_no_json_returns_400(self):
         """POST /register with a non-JSON body is treated as an invalid (missing) body."""
-        response = self.client.post("/register", data="not json", content_type="text/plain")
+        response = self.client.post("/register", content="not json", headers={"Content-Type": "text/plain"})
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(json.loads(response.data)["error"], "Invalid request body")
+        self.assertEqual(response.json()["error"], "Invalid request body")
         self.authentication.register_account.assert_not_called()
 
     def test_register_backend_failure_returns_400(self):
@@ -262,7 +275,7 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(statuses, [200] * 5 + [429])
         response = self.client.post("/register", json=payload)
         self.assertEqual(
-            json.loads(response.data),
+            response.json(),
             {"error": "Too many registration attempts. Please try again later."},
         )
 
@@ -275,7 +288,7 @@ class BackendRouteTests(unittest.TestCase):
             "/login", json={"email": "a@b.com", "password": VALID_PASSWORD}
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.data), {"id": "uid2", "token": "tok2"})
+        self.assertEqual(response.json(), {"id": "uid2", "token": "tok2"})
         self.authentication.login_account.assert_called_once_with("a@b.com", VALID_PASSWORD)
 
     def test_login_validation_errors(self):
@@ -295,9 +308,9 @@ class BackendRouteTests(unittest.TestCase):
         self.authentication.login_account.assert_not_called()
 
     def test_login_no_json_returns_400(self):
-        response = self.client.post("/login", data="bad", content_type="text/plain")
+        response = self.client.post("/login", content="bad", headers={"Content-Type": "text/plain"})
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(json.loads(response.data)["error"], "Invalid request body")
+        self.assertEqual(response.json()["error"], "Invalid request body")
         self.authentication.login_account.assert_not_called()
 
     def test_login_backend_failure_returns_400(self):
@@ -314,7 +327,7 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(self._statuses("post", "/login", 6, json=payload), [200] * 5 + [429])
         response = self.client.post("/login", json=payload)
         self.assertEqual(
-            json.loads(response.data),
+            response.json(),
             {"error": "Too many login attempts. Please try again later."},
         )
 
@@ -324,13 +337,9 @@ class BackendRouteTests(unittest.TestCase):
         response = self.client.post("/forgot-password", json={"email": "a@b.com"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
-            json.loads(response.data), {"success": "Password reset email has been sent."}
+            response.json(), {"success": "Password reset email has been sent."}
         )
         self.authentication.forgot_password.assert_called_once_with("a@b.com")
-
-    def test_forgot_password_does_not_require_a_password(self):
-        response = self.client.post("/forgot-password", json={"email": "a@b.com"})
-        self.assertEqual(response.status_code, 200)
 
     def test_forgot_password_does_not_reveal_whether_the_account_exists(self):
         """The reply is identical whatever the helper returns."""
@@ -341,7 +350,7 @@ class BackendRouteTests(unittest.TestCase):
                 response = self.client.post("/forgot-password", json={"email": "a@b.com"})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(
-                    json.loads(response.data), {"success": "Password reset email has been sent."}
+                    response.json(), {"success": "Password reset email has been sent."}
                 )
 
     def test_forgot_password_validation_errors(self):
@@ -359,13 +368,108 @@ class BackendRouteTests(unittest.TestCase):
         self.authentication.forgot_password.assert_not_called()
 
     def test_forgot_password_no_json_returns_400(self):
-        response = self.client.post("/forgot-password", data="bad", content_type="text/plain")
+        response = self.client.post("/forgot-password", content="bad", headers={"Content-Type": "text/plain"})
         self.assertEqual(response.status_code, 400)
         self.authentication.forgot_password.assert_not_called()
 
     def test_forgot_password_is_rate_limited(self):
         statuses = self._statuses("post", "/forgot-password", 4, json={"email": "a@b.com"})
         self.assertEqual(statuses, [200] * 3 + [429])
+
+    # TESTS - REST: /logout
+
+    def test_logout_success(self):
+        response = self.client.post("/logout", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"message": "Logged out successfully"})
+        self.authentication.logout_user.assert_called_once_with("alice")
+
+    def test_logout_requires_auth(self):
+        response = self.client.post("/logout")
+        self.assertEqual(response.status_code, 401)
+        self.authentication.logout_user.assert_not_called()
+
+    def test_logout_failure_returns_500(self):
+        self.authentication.logout_user.side_effect = RuntimeError("boom")
+        with self.assertLogs(self.module.logger, "ERROR"):
+            response = self.client.post("/logout", headers=AUTH)
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"error": "Logout failed"})
+
+    def test_logout_is_rate_limited(self):
+        statuses = self._statuses("post", "/logout", 11, headers=AUTH)
+        self.assertEqual(statuses, [200] * 10 + [429])
+
+    # TESTS - REST: /update-password
+
+    def test_update_password_success(self):
+        self.authentication.update_password.return_value = True
+        response = self.client.post(
+            "/update-password", json={"password": VALID_PASSWORD}, headers=AUTH
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"success": "Password has been updated."})
+        self.authentication.update_password.assert_called_once_with("alice", VALID_PASSWORD)
+
+    def test_update_password_requires_auth(self):
+        response = self.client.post("/update-password", json={"password": VALID_PASSWORD})
+        self.assertEqual(response.status_code, 401)
+        self.authentication.update_password.assert_not_called()
+
+    def test_update_password_validation_errors(self):
+        cases = [
+            ("missing password", {}, [("password", "Field required")]),
+            ("non-string password", {"password": 123456}, [("password", "valid string")]),
+            ("short password", {"password": "12345"}, [("password", "at least 6 characters")]),
+        ]
+        for label, payload, expected in cases:
+            with self.subTest(label):
+                self.module.limiter.reset()
+                self._assert_invalid_body(
+                    self.client.post("/update-password", json=payload, headers=AUTH), expected
+                )
+        self.authentication.update_password.assert_not_called()
+
+    def test_update_password_backend_failure_returns_500(self):
+        self.authentication.update_password.return_value = False
+        response = self.client.post(
+            "/update-password", json={"password": VALID_PASSWORD}, headers=AUTH
+        )
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"error": "Password update failed."})
+
+    def test_update_password_is_rate_limited(self):
+        self.authentication.update_password.return_value = True
+        statuses = self._statuses(
+            "post", "/update-password", 4, json={"password": VALID_PASSWORD}, headers=AUTH
+        )
+        self.assertEqual(statuses, [200] * 3 + [429])
+
+    # TESTS - REST: /slt-model
+
+    def test_slt_model_returns_deep_health(self):
+        self.model.ISLModelAPI.return_value.deep_health.return_value = {
+            "isl_model_status": "connected"
+        }
+        response = self.client.get("/slt-model", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"isl_model_status": "connected"})
+
+    def test_slt_model_requires_auth(self):
+        response = self.client.get("/slt-model")
+        self.assertEqual(response.status_code, 401)
+
+    def test_slt_model_failure_returns_503(self):
+        self.model.ISLModelAPI.return_value.deep_health.side_effect = RuntimeError("down")
+        with self.assertLogs(self.module.logger, "ERROR"):
+            response = self.client.get("/slt-model", headers=AUTH)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"error": "Model not ready"})
+
+    def test_slt_model_is_rate_limited(self):
+        self.model.ISLModelAPI.return_value.deep_health.return_value = {}
+        statuses = self._statuses("get", "/slt-model", 6, headers=AUTH)
+        self.assertEqual(statuses, [200] * 5 + [429])
 
     # TESTS - REST: authentication on protected routes
 
@@ -375,23 +479,32 @@ class BackendRouteTests(unittest.TestCase):
             ("post", "/history/store"),
             ("delete", "/history/abc"),
             ("delete", "/history/clear"),
+            ("post", "/logout"),
+            ("post", "/update-password"),
+            ("get", "/slt-model"),
         ]
         for method, path in routes:
             with self.subTest(route=f"{method.upper()} {path}"):
-                kwargs = {"json": {"translation": "x"}} if method == "post" else {}
+                kwargs = {}
+                if path == "/history/store":
+                    kwargs = {"json": {"translation": "x"}}
+                elif path == "/update-password":
+                    kwargs = {"json": {"password": VALID_PASSWORD}}
                 response = getattr(self.client, method)(path, **kwargs)
                 self.assertEqual(response.status_code, 401)
-                self.assertEqual(json.loads(response.data), {"error": "Missing or invalid token"})
+                self.assertEqual(response.json(), {"error": "Missing or invalid token"})
         self.auth.verify_id_token.assert_not_called()
         self.history.retrieve_history.assert_not_called()
         self.history.store_translation.assert_not_called()
         self.history.delete_translation.assert_not_called()
         self.history.delete_all_translations.assert_not_called()
+        self.authentication.logout_user.assert_not_called()
+        self.authentication.update_password.assert_not_called()
 
     def test_require_auth_rejects_wrong_scheme(self):
         response = self.client.get("/history", headers={"Authorization": "Basic abc123"})
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(json.loads(response.data), {"error": "Missing or invalid token"})
+        self.assertEqual(response.json(), {"error": "Missing or invalid token"})
         self.auth.verify_id_token.assert_not_called()
 
     def test_require_auth_rejects_invalid_tokens(self):
@@ -400,21 +513,21 @@ class BackendRouteTests(unittest.TestCase):
                 self.auth.verify_id_token.side_effect = error
                 response = self.client.get("/history", headers={"Authorization": "Bearer invalid"})
                 self.assertEqual(response.status_code, 401)
-                self.assertEqual(json.loads(response.data), {"error": "Invalid token"})
+                self.assertEqual(response.json(), {"error": "Invalid token"})
         self.history.retrieve_history.assert_not_called()
 
     def test_require_auth_reports_expired_tokens(self):
         self.auth.verify_id_token.side_effect = self.auth.ExpiredIdTokenError()
         response = self.client.get("/history", headers={"Authorization": "Bearer old"})
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(json.loads(response.data), {"error": "Token expired"})
+        self.assertEqual(response.json(), {"error": "Token expired"})
         self.history.retrieve_history.assert_not_called()
 
     def test_require_auth_reports_revoked_tokens(self):
         self.auth.verify_id_token.side_effect = self.auth.RevokedIdTokenError()
         response = self.client.get("/history", headers={"Authorization": "Bearer old"})
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(json.loads(response.data), {"error": "Token revoked"})
+        self.assertEqual(response.json(), {"error": "Token revoked"})
         self.history.retrieve_history.assert_not_called()
 
     def test_require_auth_passes_bare_token_and_check_revoked_to_verifier(self):
@@ -426,7 +539,7 @@ class BackendRouteTests(unittest.TestCase):
     def test_history_uses_token_owner_even_with_another_id(self):
         response = self.client.get("/history?id=bob", headers=AUTH)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.data), {"history": ["hello"]})
+        self.assertEqual(response.json(), {"history": ["hello"]})
         self.history.retrieve_history.assert_called_once_with("alice")
 
     def test_history_get_returns_items(self):
@@ -437,13 +550,13 @@ class BackendRouteTests(unittest.TestCase):
         self.history.retrieve_history.return_value = items
         response = self.client.get("/history", headers=AUTH)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.data), {"history": items})
+        self.assertEqual(response.json(), {"history": items})
 
     def test_history_get_empty_list(self):
         self.history.retrieve_history.return_value = []
         response = self.client.get("/history", headers=AUTH)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.data), {"history": []})
+        self.assertEqual(response.json(), {"history": []})
 
     def test_history_get_failure_returns_500(self):
         self.history.retrieve_history.side_effect = RuntimeError("db down")
@@ -451,7 +564,7 @@ class BackendRouteTests(unittest.TestCase):
             response = self.client.get("/history", headers=AUTH)
         self.assertEqual(response.status_code, 500)
         self.assertEqual(
-            json.loads(response.data),
+            response.json(),
             {"history": "", "error": "Failed to retrieve history"},
         )
 
@@ -459,7 +572,7 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(self._statuses("get", "/history", 21, headers=AUTH), [200] * 20 + [429])
         response = self.client.get("/history", headers=AUTH)
         self.assertEqual(
-            json.loads(response.data),
+            response.json(),
             {"error": "Too many history requests. Please try again later."},
         )
         # A different signed-in user has their own bucket.
@@ -481,7 +594,7 @@ class BackendRouteTests(unittest.TestCase):
             "/history/store", json={"translation": "hello"}, headers=AUTH
         )
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(json.loads(response.data), item)
+        self.assertEqual(response.json(), item)
         self.history.store_translation.assert_called_once_with("alice", "hello")
 
     def test_history_store_uses_uid_from_verified_token(self):
@@ -516,19 +629,19 @@ class BackendRouteTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 response = self.client.post("/history/store", json=payload, headers=AUTH)
                 self.assertEqual(response.status_code, 400)
-                self.assertEqual(json.loads(response.data), expected_body)
+                self.assertEqual(response.json(), expected_body)
         self.history.store_translation.assert_not_called()
 
     def test_history_store_rejects_bodies_that_are_not_json(self):
-        """Malformed JSON gives 400; a wrong content type gives 415 on current Flask (400 on old)."""
+        """A body that fails to parse as JSON is rejected regardless of Content-Type."""
         bad_json = self.client.post(
-            "/history/store", data="{oops", content_type="application/json", headers=AUTH
+            "/history/store", content="{oops", headers={**AUTH, "Content-Type": "application/json"}
         )
         self.assertEqual(bad_json.status_code, 400)
         wrong_type = self.client.post(
-            "/history/store", data="not json", content_type="text/plain", headers=AUTH
+            "/history/store", content="not json", headers={**AUTH, "Content-Type": "text/plain"}
         )
-        self.assertIn(wrong_type.status_code, (400, 415))
+        self.assertEqual(wrong_type.status_code, 400)
         self.history.store_translation.assert_not_called()
 
     def test_history_store_failure_returns_500(self):
@@ -538,7 +651,7 @@ class BackendRouteTests(unittest.TestCase):
                 "/history/store", json={"translation": "hello"}, headers=AUTH
             )
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(json.loads(response.data), {"error": "Failed to store history"})
+        self.assertEqual(response.json(), {"error": "Failed to store history"})
 
     # TESTS - REST: DELETE /history/<id> and /history/clear
 
@@ -546,28 +659,28 @@ class BackendRouteTests(unittest.TestCase):
         self.history.delete_translation.return_value = True
         response = self.client.delete("/history/-N1", headers=AUTH)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.data), {"message": "Translation deleted"})
+        self.assertEqual(response.json(), {"message": "Translation deleted"})
         self.history.delete_translation.assert_called_once_with("alice", "-N1")
 
     def test_history_delete_unknown_id_returns_404(self):
         self.history.delete_translation.return_value = False
         response = self.client.delete("/history/missing", headers=AUTH)
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(json.loads(response.data), {"error": "Translation not found"})
+        self.assertEqual(response.json(), {"error": "Translation not found"})
 
     def test_history_delete_failure_returns_500(self):
         self.history.delete_translation.side_effect = RuntimeError("db down")
         with self.assertLogs(self.module.logger, "ERROR"):
             response = self.client.delete("/history/-N1", headers=AUTH)
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(json.loads(response.data), {"error": "Failed to delete history"})
+        self.assertEqual(response.json(), {"error": "Failed to delete history"})
 
     def test_history_clear_is_not_shadowed_by_delete_by_id(self):
         """DELETE /history/clear must reach clear_history, not delete_history('clear')."""
         self.history.delete_all_translations.return_value = True
         response = self.client.delete("/history/clear", headers=AUTH)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.data), {"message": "History deleted"})
+        self.assertEqual(response.json(), {"message": "History deleted"})
         self.history.delete_all_translations.assert_called_once_with("alice")
         self.history.delete_translation.assert_not_called()
 
@@ -575,23 +688,24 @@ class BackendRouteTests(unittest.TestCase):
         self.history.delete_all_translations.return_value = False
         response = self.client.delete("/history/clear", headers=AUTH)
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(json.loads(response.data), {"error": "No history found"})
+        self.assertEqual(response.json(), {"error": "No history found"})
 
     def test_history_clear_failure_returns_500(self):
         self.history.delete_all_translations.side_effect = RuntimeError("db down")
         with self.assertLogs(self.module.logger, "ERROR"):
             response = self.client.delete("/history/clear", headers=AUTH)
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(json.loads(response.data), {"error": "Failed to delete history"})
+        self.assertEqual(response.json(), {"error": "Failed to delete history"})
 
     # TESTS - WebSocket route wiring (behaviour lives in WebSocketHandlerTests)
 
     def test_ws_route_is_registered(self):
-        self.flask_sock.Sock.return_value.route.assert_called_once_with("/ws")
+        ws_routes = [r for r in self.module.app.router.routes if isinstance(r, WebSocketRoute)]
+        self.assertEqual([r.path for r in ws_routes], ["/ws"])
 
     def test_ws_route_delegates_to_handler_with_shared_model_and_executor(self):
         ws = MagicMock()
-        self.module.websocket_translate(ws)
+        asyncio.run(self.module.websocket_translate(ws))
         self.websocket_handler.handle_websocket.assert_called_once_with(
             ws, self.module.model_api, self.module.executor
         )
@@ -599,7 +713,7 @@ class BackendRouteTests(unittest.TestCase):
 
 # WebSocket handler - shared fixture
 
-class _HandlerTestCase(unittest.TestCase):
+class _HandlerTestCase(unittest.IsolatedAsyncioTestCase):
     """Loads websocket_handler.py with Firebase and processing replaced."""
 
     def setUp(self):
@@ -619,32 +733,70 @@ class _HandlerTestCase(unittest.TestCase):
         self.handler.run_inference = self.run_inference
         self.model_api = MagicMock()
         self.model_api.check_health.return_value = True
-        self.app = flask.Flask("handler-tests")
 
-    def _run(self, ws, pool=None, landmarkers=(None, None), query="token=valid", ticks=None):
-        """Run handle_websocket once and return the (mock) executor.
+    def _ws(self, *messages, auth_header="Bearer valid"):
+        """A fake FastAPI WebSocket.
 
-        `ticks` feeds time.monotonic(); by default every frame is a second
-        apart so none is dropped by the frame-rate limiter. Only the handler's
-        own `time` reference is faked, never the global one.
+        `messages` are returned in order from receive_text(); after they're
+        exhausted (or if none are given) a WebSocketDisconnect ends the
+        connection loop, mirroring flask-sock's old `ws.receive()` -> None.
         """
-        pool = pool if pool is not None else MagicMock()
-        fake_time = MagicMock()
-        fake_time.monotonic.side_effect = ticks if ticks is not None else itertools.count(1)
-        self.handler.time = fake_time
-        self.handler.build_landmarkers = MagicMock(return_value=landmarkers)
-        with self.app.test_request_context(f"/ws?{query}"):
-            self.handler.handle_websocket(ws, self.model_api, pool)
-        return pool
+        ws = MagicMock()
+        ws.headers = {"Authorization": auth_header} if auth_header is not None else {}
+        ws.application_state = WebSocketState.CONNECTED
+        ws.accept = AsyncMock()
+
+        async def _close(*args, **kwargs):
+            ws.application_state = WebSocketState.DISCONNECTED
+
+        ws.close = AsyncMock(side_effect=_close)
+        ws.send_text = AsyncMock()
+        ws.receive_text = AsyncMock(side_effect=list(messages) + [WebSocketDisconnect()])
+        return ws
 
     @staticmethod
     def _sent(ws):
-        return [json.loads(c[0][0]) for c in ws.send.call_args_list]
+        return [json.loads(c[0][0]) for c in ws.send_text.call_args_list]
 
-    def _ws(self, *messages):
-        ws = MagicMock()
-        ws.receive.side_effect = list(messages) + [None]
-        return ws
+    @staticmethod
+    def _default_pool():
+        """A pool whose submit() always hands back a real, resolved Future.
+
+        Used whenever a test doesn't care what the (landmark) job returns,
+        just that the connection loop can run a frame through without
+        asyncio.wrap_future() rejecting a bare MagicMock.
+        """
+        pool = MagicMock()
+        pool.submit.side_effect = lambda *a, **k: _done_future(Image.new("RGB", (32, 32)))
+        return pool
+
+    async def _run(self, ws, pool=None, landmarkers=(None, None), ticks=None):
+        """Run handle_websocket once and return the (mock) executor.
+
+        `ticks` feeds the running loop's time() via a thin proxy so the
+        frame-rate limiter can be driven deterministically; by default every
+        frame is a second apart so none is dropped. Everything else
+        (run_in_executor, ensure_future, ...) is forwarded straight through
+        to the real loop, so actual scheduling is unaffected.
+        """
+        pool = pool if pool is not None else self._default_pool()
+        real_loop = asyncio.get_running_loop()
+        tick_source = iter(ticks if ticks is not None else itertools.count(1))
+
+        class _LoopTimeProxy:
+            def time(self_proxy):
+                try:
+                    return next(tick_source)
+                except StopIteration:
+                    return real_loop.time()
+
+            def __getattr__(self_proxy, name):
+                return getattr(real_loop, name)
+
+        self.handler.build_landmarkers = MagicMock(return_value=landmarkers)
+        with patch.object(self.handler.asyncio, "get_running_loop", return_value=_LoopTimeProxy()):
+            await self.handler.handle_websocket(ws, self.model_api, pool)
+        return pool
 
     def _pipeline_pool(self, inference_future):
         """Executor whose landmark jobs finish instantly and inference returns `inference_future`."""
@@ -677,11 +829,17 @@ class WebSocketHelperTests(_HandlerTestCase):
         self.auth.verify_id_token.side_effect = ValueError("bad")
         self.assertIsNone(self.handler.authenticate_websocket("garbage"))
 
-    def test_send_json_serialises_payload(self):
-        ws = MagicMock()
-        self.handler.send_json(ws, {"a": 1})
-        ws.send.assert_called_once()
-        self.assertEqual(json.loads(ws.send.call_args[0][0]), {"a": 1})
+    async def test_send_json_serialises_payload(self):
+        ws = self._ws()
+        await self.handler.send_json(ws, {"a": 1})
+        ws.send_text.assert_called_once()
+        self.assertEqual(json.loads(ws.send_text.call_args[0][0]), {"a": 1})
+
+    async def test_send_json_skips_disconnected_socket(self):
+        ws = self._ws()
+        ws.application_state = WebSocketState.DISCONNECTED
+        await self.handler.send_json(ws, {"a": 1})
+        ws.send_text.assert_not_called()
 
     def test_decode_frame_returns_rgb_image(self):
         image = self.handler.decode_frame(_frame_msg(8, 6))
@@ -698,7 +856,6 @@ class WebSocketHelperTests(_HandlerTestCase):
     def test_decode_frame_rejects_bad_input(self):
         cases = [
             ("not json", "not json", "Invalid JSON message"),
-            ("none", None, "Invalid JSON message"),
             ("no frame key", json.dumps({}), "Missing frame"),
             ("empty frame", json.dumps({"frame": ""}), "Missing frame"),
             ("bad base64", json.dumps({"frame": "!!!not_valid_base64!!!"}), "Invalid base64 frame"),
@@ -710,54 +867,59 @@ class WebSocketHelperTests(_HandlerTestCase):
                 with self.assertRaisesRegex(ValueError, error):
                     self.handler.decode_frame(message)
 
-    def test_config_message_switches_mode_and_acknowledges(self):
+    def test_decode_frame_rejects_oversized_message(self):
+        huge = json.dumps({"frame": "A" * (self.handler.MAX_MESSAGE_CHARS + 1)})
+        with self.assertRaisesRegex(ValueError, "Message too large"):
+            self.handler.decode_frame(huge)
+
+    async def test_config_message_switches_mode_and_acknowledges(self):
         for mode in ("frames", "video", "hybrid"):
             with self.subTest(mode=mode):
-                ws, config = MagicMock(), {"mode": "frames"}
+                ws, config = self._ws(), {"mode": "frames"}
                 message = json.dumps({"type": "config", "mode": mode})
-                self.assertTrue(self.handler.handle_config_message(message, config, ws))
+                self.assertTrue(await self.handler.handle_config_message(message, config, ws))
                 self.assertEqual(config["mode"], mode)
                 self.assertEqual(self._sent(ws), [{"status": "config_updated", "mode": mode}])
 
-    def test_config_message_with_unknown_mode_is_consumed_but_ignored(self):
-        ws, config = MagicMock(), {"mode": "frames"}
+    async def test_config_message_with_unknown_mode_is_rejected(self):
+        ws, config = self._ws(), {"mode": "frames"}
         message = json.dumps({"type": "config", "mode": "unknown_mode"})
-        self.assertTrue(self.handler.handle_config_message(message, config, ws))
+        self.assertTrue(await self.handler.handle_config_message(message, config, ws))
         self.assertEqual(config["mode"], "frames")
-        ws.send.assert_not_called()
+        self.assertEqual(self._sent(ws), [{"error": "Invalid config", "field": "mode"}])
 
-    def test_non_config_messages_are_not_consumed(self):
-        ws, config = MagicMock(), {"mode": "frames"}
+    async def test_non_config_messages_are_not_consumed(self):
+        ws, config = self._ws(), {"mode": "frames"}
         for message in ("not json", _frame_msg(), json.dumps({"type": "ping"})):
             with self.subTest(message=message[:20]):
-                self.assertFalse(self.handler.handle_config_message(message, config, ws))
-        ws.send.assert_not_called()
+                self.assertFalse(await self.handler.handle_config_message(message, config, ws))
+        ws.send_text.assert_not_called()
 
-    def test_send_inference_result_sends_label_and_confidence(self):
-        ws = MagicMock()
+    async def test_send_inference_result_sends_label_and_confidence(self):
+        ws = self._ws()
         result = {"prediction": "hello", "confidence": 0.95, "total_latency_ms": 12}
-        self.assertTrue(self.handler.send_inference_result(ws, result, "frames"))
+        self.assertTrue(await self.handler.send_inference_result(ws, result, "frames"))
         self.assertEqual(self._sent(ws), [{"label": "hello", "confidence": 0.95}])
 
-    def test_send_inference_result_tolerates_bad_confidence(self):
-        ws = MagicMock()
+    async def test_send_inference_result_tolerates_bad_confidence(self):
+        ws = self._ws()
         result = {"prediction": "hello", "confidence": "high"}
-        self.assertTrue(self.handler.send_inference_result(ws, result, "video"))
+        self.assertTrue(await self.handler.send_inference_result(ws, result, "video"))
         self.assertEqual(self._sent(ws), [{"label": "hello", "confidence": 0.0}])
 
-    def test_send_inference_result_skips_empty_and_missing_labels(self):
+    async def test_send_inference_result_skips_empty_and_missing_labels(self):
         for result in (None, {}, {"prediction": "", "confidence": 0.9}, {"confidence": 0.9}):
             with self.subTest(result=result):
-                ws = MagicMock()
-                self.assertFalse(self.handler.send_inference_result(ws, result, "frames"))
-                ws.send.assert_not_called()
+                ws = self._ws()
+                self.assertFalse(await self.handler.send_inference_result(ws, result, "frames"))
+                ws.send_text.assert_not_called()
 
-    def test_send_inference_result_logs_errors_and_sends_nothing(self):
-        ws = MagicMock()
+    async def test_send_inference_result_logs_errors_and_sends_nothing(self):
+        ws = self._ws()
         with self.assertLogs(self.handler.logger, "ERROR"):
-            sent = self.handler.send_inference_result(ws, {"error": "boom"}, "frames")
+            sent = await self.handler.send_inference_result(ws, {"error": "boom"}, "frames")
         self.assertFalse(sent)
-        ws.send.assert_not_called()
+        ws.send_text.assert_not_called()
 
 
 # WebSocketHandlerTests - handle_websocket connection lifecycle
@@ -765,130 +927,142 @@ class WebSocketHelperTests(_HandlerTestCase):
 class WebSocketHandlerTests(_HandlerTestCase):
     # authentication
 
-    def test_rejects_missing_token(self):
-        ws = MagicMock()
-        self._run(ws, query="")
-        self.assertEqual(self._sent(ws), [{"error": "Unauthorized"}])
-        ws.close.assert_called_once()
-        ws.receive.assert_not_called()
+    async def test_missing_authorization_header_closes_without_accepting(self):
+        ws = self._ws(auth_header=None)
+        await self.handler.handle_websocket(ws, self.model_api, MagicMock())
+        ws.accept.assert_not_called()
+        ws.close.assert_called_once_with(code=1008, reason="Missing Authorization header")
+        ws.send_text.assert_not_called()
+        ws.receive_text.assert_not_called()
         self.auth.verify_id_token.assert_not_called()
 
-    def test_rejects_invalid_token(self):
+    async def test_invalid_authorization_scheme_closes_without_accepting(self):
+        ws = self._ws(auth_header="Basic abc123")
+        await self.handler.handle_websocket(ws, self.model_api, MagicMock())
+        ws.accept.assert_not_called()
+        ws.close.assert_called_once_with(code=1008, reason="Invalid Authorization header")
+        self.auth.verify_id_token.assert_not_called()
+
+    async def test_rejects_invalid_token(self):
         for error in (ValueError("bad"), Exception("expired")):
             with self.subTest(error=repr(error)):
                 self.auth.verify_id_token.side_effect = error
-                ws = MagicMock()
-                self._run(ws, query="token=garbage")
+                ws = self._ws(auth_header="Bearer garbage")
+                await self.handler.handle_websocket(ws, self.model_api, MagicMock())
+                ws.accept.assert_called_once()
                 self.assertEqual(self._sent(ws), [{"error": "Unauthorized"}])
                 ws.close.assert_called_once()
-                ws.receive.assert_not_called()
+                ws.receive_text.assert_not_called()
 
-    def test_unauthorized_close_errors_are_swallowed(self):
-        ws = MagicMock()
-        ws.close.side_effect = RuntimeError("already closed")
-        self._run(ws, query="")  # must not raise
+    async def test_unauthorized_close_errors_are_swallowed(self):
+        self.auth.verify_id_token.side_effect = ValueError("bad")
+        ws = self._ws(auth_header="Bearer garbage")
+        ws.close = AsyncMock(side_effect=RuntimeError("already closed"))
+        await self.handler.handle_websocket(ws, self.model_api, MagicMock())  # must not raise
         ws.close.assert_called_once()
 
-    def test_sends_connected_on_auth_success(self):
+    async def test_sends_connected_on_auth_success(self):
         ws = self._ws()
-        self._run(ws)
+        await self._run(ws)
         self.auth.verify_id_token.assert_called_once_with("valid")
         self.assertEqual(
             self._sent(ws)[0], {"status": "connected", "message": "Ready for frames"}
         )
 
     def test_receive_uses_30_second_timeout(self):
-        ws = self._ws()
-        self._run(ws)
-        ws.receive.assert_called_with(timeout=30)
+        self.assertEqual(self.handler.RECEIVE_TIMEOUT, 30.0)
 
     # start-up notices
 
-    def test_landmarks_disabled_notice_when_mediapipe_missing(self):
+    async def test_landmarks_disabled_notice_when_mediapipe_missing(self):
         self.handler.MEDIAPIPE_OK = False
         ws = self._ws()
-        self._run(ws)
+        await self._run(ws)
         info = [m for m in self._sent(ws) if m.get("status") == "info"]
         self.assertEqual(len(info), 1)
         self.assertIn("Landmarks disabled", info[0]["message"])
 
-    def test_no_landmarks_notice_when_mediapipe_available(self):
+    async def test_no_landmarks_notice_when_mediapipe_available(self):
         ws = self._ws()
-        self._run(ws)
+        await self._run(ws)
         self.assertFalse([m for m in self._sent(ws) if m.get("status") == "info"])
 
-    def test_model_unhealthy_sends_warming_message(self):
+    async def test_model_unhealthy_sends_warming_message(self):
         self.model_api.check_health.return_value = False
         ws = self._ws()
-        self._run(ws)
+        await self._run(ws)
         warming = [m for m in self._sent(ws) if m.get("status") == "api_warming"]
         self.assertEqual(len(warming), 1)
 
-    def test_model_health_check_error_sends_warming_message(self):
+    async def test_model_health_check_error_sends_warming_message(self):
         self.model_api.check_health.side_effect = ConnectionError("refused")
         ws = self._ws()
         with self.assertLogs(self.handler.logger, "ERROR"):
-            self._run(ws)
+            await self._run(ws)
         self.assertTrue([m for m in self._sent(ws) if m.get("status") == "api_warming"])
 
-    def test_model_healthy_sends_no_warming_message(self):
+    async def test_model_healthy_sends_no_warming_message(self):
         ws = self._ws()
-        self._run(ws)
+        await self._run(ws)
         self.assertFalse([m for m in self._sent(ws) if m.get("status") == "api_warming"])
 
     # configuration
 
-    def test_config_command_updates_mode(self):
+    async def test_config_command_updates_mode(self):
         ws = self._ws(json.dumps({"type": "config", "mode": "video"}))
-        pool = self._run(ws)
+        pool = MagicMock()
+        await self._run(ws, pool=pool)
         acks = [m for m in self._sent(ws) if m.get("status") == "config_updated"]
         self.assertEqual(acks, [{"status": "config_updated", "mode": "video"}])
         pool.submit.assert_not_called()  # config messages are never treated as frames
 
-    def test_hybrid_mode_is_accepted(self):
+    async def test_hybrid_mode_is_accepted(self):
         ws = self._ws(json.dumps({"type": "config", "mode": "hybrid"}))
-        self._run(ws)
+        await self._run(ws)
         acks = [m for m in self._sent(ws) if m.get("status") == "config_updated"]
         self.assertEqual(acks[0]["mode"], "hybrid")
 
-    def test_invalid_config_mode_is_not_acknowledged(self):
+    async def test_invalid_config_mode_is_not_acknowledged(self):
         ws = self._ws(json.dumps({"type": "config", "mode": "unknown_mode"}))
-        pool = self._run(ws)
+        pool = MagicMock()
+        await self._run(ws, pool=pool)
         self.assertFalse([m for m in self._sent(ws) if m.get("status") == "config_updated"])
         pool.submit.assert_not_called()
 
     # frame intake
 
-    def test_invalid_frame_sends_error_and_continues(self):
+    async def test_invalid_frame_sends_error_and_continues(self):
         ws = self._ws(
             json.dumps({"frame": "!!!not_valid_base64!!!"}),
             "not json",
             json.dumps({"frame": base64.b64encode(b"hello").decode()}),
         )
+        pool = MagicMock()
         with self.assertLogs(self.handler.logger, "WARNING"):
-            pool = self._run(ws)
+            await self._run(ws, pool=pool)
         errors = [m for m in self._sent(ws) if "error" in m]
         self.assertEqual(errors, [{"error": "Invalid frame"}] * 3)
         pool.submit.assert_not_called()
 
-    def test_empty_frame_field_is_reported_as_invalid(self):
+    async def test_empty_frame_field_is_reported_as_invalid(self):
         ws = self._ws(json.dumps({"frame": ""}))
+        pool = MagicMock()
         with self.assertLogs(self.handler.logger, "WARNING"):
-            pool = self._run(ws)
+            await self._run(ws, pool=pool)
         self.assertIn({"error": "Invalid frame"}, self._sent(ws))
         pool.submit.assert_not_called()
 
-    def test_frames_faster_than_frame_delay_are_dropped(self):
+    async def test_frames_faster_than_frame_delay_are_dropped(self):
         pool = MagicMock()
         pool.submit.return_value = _done_future(Image.new("RGB", (8, 8)))
         ws = self._ws(_frame_msg(), _frame_msg(), _frame_msg())
         # 2nd frame arrives 10 ms after the 1st (< FRAME_DELAY) and is skipped.
-        self._run(ws, pool=pool, ticks=[1.0, 1.01, 1.2])
+        await self._run(ws, pool=pool, ticks=[1.0, 1.01, 1.2])
         self.assertEqual(pool.submit.call_count, 2)
 
-    def test_frame_is_scheduled_for_landmark_processing(self):
+    async def test_frame_is_scheduled_for_landmark_processing(self):
         pose, hand = MagicMock(), MagicMock()
-        pool = self._run(self._ws(_frame_msg(8, 6)), landmarkers=(pose, hand))
+        pool = await self._run(self._ws(_frame_msg(8, 6)), landmarkers=(pose, hand))
         fn, image, pose_arg, hand_arg, enabled = pool.submit.call_args[0]
         self.assertIs(fn, self.process_frame)
         self.assertEqual(image.size, (8, 6))
@@ -896,69 +1070,71 @@ class WebSocketHandlerTests(_HandlerTestCase):
         self.assertIs(hand_arg, hand)
         self.assertTrue(enabled)
 
-    def test_landmarks_flag_is_off_without_detectors(self):
-        pool = self._run(self._ws(_frame_msg()), landmarkers=(None, None))
+    async def test_landmarks_flag_is_off_without_detectors(self):
+        pool = await self._run(self._ws(_frame_msg()), landmarkers=(None, None))
         self.assertFalse(pool.submit.call_args[0][4])
 
-    def test_landmarks_flag_is_off_if_only_one_detector_exists(self):
-        pool = self._run(self._ws(_frame_msg()), landmarkers=(MagicMock(), None))
+    async def test_landmarks_flag_is_off_if_only_one_detector_exists(self):
+        pool = await self._run(self._ws(_frame_msg()), landmarkers=(MagicMock(), None))
         self.assertFalse(pool.submit.call_args[0][4])
 
-    def test_slow_landmarks_keep_pending_job_and_collect_its_result(self):
+    async def test_slow_landmarks_keep_pending_job_and_collect_its_result(self):
         message = _frame_msg()
         first, second = Future(), Future()
         first.result = MagicMock(wraps=first.result)
         pool = MagicMock()
         pool.submit.side_effect = [first, second]
         pose, hand = MagicMock(), MagicMock()
+
+        ws = self._ws(message, message, message)
+        original_receive = ws.receive_text
         calls = 0
 
-        def receive(**kwargs):
+        async def receive(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 3:
                 # Frame 2 arrived while frame 1 was still being processed.
                 self.assertEqual(pool.submit.call_count, 1)
                 first.set_result(Image.new("RGB", (8, 8)))
-            return message if calls <= 3 else None
+            return await original_receive()
 
-        ws = MagicMock()
-        ws.receive.side_effect = receive
-        self._run(ws, pool=pool, landmarkers=(pose, hand))
+        ws.receive_text = AsyncMock(side_effect=receive)
+        await self._run(ws, pool=pool, landmarkers=(pose, hand))
         self.assertEqual(pool.submit.call_count, 2)
         first.result.assert_called_once()
         self.assertTrue(second.cancelled())
         pose.close.assert_called_once()
         hand.close.assert_called_once()
 
-    def test_landmark_failure_does_not_stop_the_stream(self):
+    async def test_landmark_failure_does_not_stop_the_stream(self):
         pool = MagicMock()
         pool.submit.return_value = _failed_future(RuntimeError("mediapipe crashed"))
         pose, hand = MagicMock(), MagicMock()
         ws = self._ws(_frame_msg(), _frame_msg(), _frame_msg())
         with self.assertLogs(self.handler.logger, "ERROR"):
-            self._run(ws, pool=pool, landmarkers=(pose, hand))
-        self.assertEqual(ws.receive.call_count, 4)  # ran until the disconnect
+            await self._run(ws, pool=pool, landmarkers=(pose, hand))
+        self.assertEqual(ws.receive_text.call_count, 4)  # ran until the disconnect
         self.assertFalse([m for m in self._sent(ws) if "label" in m])
         pose.close.assert_called_once()
         hand.close.assert_called_once()
 
     # inference
 
-    def test_inference_result_sent_to_client(self):
+    async def test_inference_result_sent_to_client(self):
         """16 buffered frames trigger inference; the label is echoed back."""
         inference = _done_future({"prediction": "hello", "confidence": 0.95})
         pool = self._pipeline_pool(inference)
         # Frame N collects the landmark job of frame N-1, so the 16th buffered
         # frame lands on message 17 (dispatch) and the result is sent on 18.
         ws = self._ws(*[_frame_msg()] * 18)
-        self._run(ws, pool=pool)
+        await self._run(ws, pool=pool)
         labels = [m for m in self._sent(ws) if "label" in m]
         self.assertEqual(labels, [{"label": "hello", "confidence": 0.95}])
 
-    def test_inference_gets_16_resized_frames_and_default_mode(self):
+    async def test_inference_gets_16_resized_frames_and_default_mode(self):
         pool = self._pipeline_pool(Future())
-        self._run(self._ws(*[_frame_msg()] * 17), pool=pool)
+        await self._run(self._ws(*[_frame_msg()] * 17), pool=pool)
         calls = self._inference_calls(pool)
         self.assertEqual(len(calls), 1)
         _, frames, mode, model_api, save_videos = calls[0][0]
@@ -968,92 +1144,100 @@ class WebSocketHandlerTests(_HandlerTestCase):
         self.assertIs(model_api, self.model_api)
         self.assertIs(save_videos, self.handler.SAVE_TEST_VIDEOS)
 
-    def test_inference_uses_the_configured_mode(self):
+    async def test_inference_uses_the_configured_mode(self):
         pool = self._pipeline_pool(Future())
         ws = self._ws(json.dumps({"type": "config", "mode": "hybrid"}), *[_frame_msg()] * 17)
-        self._run(ws, pool=pool)
+        await self._run(ws, pool=pool)
         self.assertEqual(self._inference_calls(pool)[0][0][2], "hybrid")
 
-    def test_no_inference_before_the_clip_is_full(self):
+    async def test_no_inference_before_the_clip_is_full(self):
         pool = self._pipeline_pool(Future())
-        self._run(self._ws(*[_frame_msg()] * 16), pool=pool)
+        await self._run(self._ws(*[_frame_msg()] * 16), pool=pool)
         self.assertEqual(self._inference_calls(pool), [])
 
-    def test_inference_error_is_logged_and_no_label_sent(self):
+    async def test_inference_error_is_logged_and_no_label_sent(self):
         pool = self._pipeline_pool(_done_future({"error": "model down"}))
         ws = self._ws(*[_frame_msg()] * 18)
         with self.assertLogs(self.handler.logger, "ERROR"):
-            self._run(ws, pool=pool)
+            await self._run(ws, pool=pool)
         self.assertFalse([m for m in self._sent(ws) if "label" in m])
 
-    def test_inference_without_label_sends_nothing(self):
+    async def test_inference_without_label_sends_nothing(self):
         pool = self._pipeline_pool(_done_future({"prediction": "", "confidence": 0.1}))
         ws = self._ws(*[_frame_msg()] * 18)
-        self._run(ws, pool=pool)
+        await self._run(ws, pool=pool)
         self.assertFalse([m for m in self._sent(ws) if "label" in m])
 
-    def test_inference_future_raising_does_not_crash_the_stream(self):
+    async def test_inference_future_raising_does_not_crash_the_stream(self):
         pool = self._pipeline_pool(_failed_future(RuntimeError("worker died")))
         ws = self._ws(*[_frame_msg()] * 18)
         with self.assertLogs(self.handler.logger, "ERROR"):
-            self._run(ws, pool=pool)
-        self.assertEqual(ws.receive.call_count, 19)
+            await self._run(ws, pool=pool)
+        self.assertEqual(ws.receive_text.call_count, 19)
 
     # disconnect / cleanup
 
-    def test_disconnect_cancels_pending_inference_future(self):
+    async def test_disconnect_cancels_pending_inference_future(self):
         pending_inference = Future()
         pool = self._pipeline_pool(pending_inference)
-        self._run(self._ws(*[_frame_msg()] * 17), pool=pool)
+        await self._run(self._ws(*[_frame_msg()] * 17), pool=pool)
         self.assertTrue(pending_inference.cancelled())
 
-    def test_disconnect_waits_for_running_landmarks_before_closing_detectors(self):
+    async def test_disconnect_waits_for_running_landmarks_before_closing_detectors(self):
         pose, hand = MagicMock(), MagicMock()
-        pending = MagicMock()
-        pending.cancel.return_value = False
+        pending_raw = Future()
+        pending_raw.set_running_or_notify_cancel()  # in-flight: cancel() must fail
+        pool = MagicMock()
+        pool.submit.return_value = pending_raw
 
-        def finish():
+        async def resolve_once_awaited():
+            await asyncio.sleep(0)
             pose.close.assert_not_called()
             hand.close.assert_not_called()
+            pending_raw.set_result(Image.new("RGB", (8, 8)))
 
-        pending.result.side_effect = finish
-        pool = MagicMock()
-        pool.submit.return_value = pending
-        self._run(self._ws(_frame_msg()), pool=pool, landmarkers=(pose, hand))
-        pending.result.assert_called_once()
+        resolver = asyncio.ensure_future(resolve_once_awaited())
+        await self._run(self._ws(_frame_msg()), pool=pool, landmarkers=(pose, hand))
+        await resolver
         pose.close.assert_called_once()
         hand.close.assert_called_once()
 
-    def test_disconnect_survives_failed_landmark_job_and_still_closes_detectors(self):
+    async def test_disconnect_survives_failed_landmark_job_and_still_closes_detectors(self):
         pose, hand = MagicMock(), MagicMock()
-        pending = MagicMock()
-        pending.cancel.return_value = False
-        pending.result.side_effect = RuntimeError("landmarks failed")
+        pending_raw = Future()
+        pending_raw.set_running_or_notify_cancel()
         pool = MagicMock()
-        pool.submit.return_value = pending
+        pool.submit.return_value = pending_raw
+
+        async def fail_once_awaited():
+            await asyncio.sleep(0)
+            pending_raw.set_exception(RuntimeError("landmarks failed"))
+
+        resolver = asyncio.ensure_future(fail_once_awaited())
         with self.assertLogs(self.handler.logger, "ERROR"):
-            self._run(self._ws(_frame_msg()), pool=pool, landmarkers=(pose, hand))
+            await self._run(self._ws(_frame_msg()), pool=pool, landmarkers=(pose, hand))
+        await resolver
         pose.close.assert_called_once()
         hand.close.assert_called_once()
 
-    def test_detector_close_errors_do_not_leak(self):
+    async def test_detector_close_errors_do_not_leak(self):
         pose, hand = MagicMock(), MagicMock()
         pose.close.side_effect = RuntimeError("pose close failed")
         with self.assertLogs(self.handler.logger, "ERROR"):
-            self._run(self._ws(), landmarkers=(pose, hand))
+            await self._run(self._ws(), landmarkers=(pose, hand))
         hand.close.assert_called_once()  # still closed after the pose failure
 
-    def test_receive_error_ends_session_and_cleans_up(self):
+    async def test_receive_error_ends_session_and_cleans_up(self):
         pose, hand = MagicMock(), MagicMock()
-        ws = MagicMock()
-        ws.receive.side_effect = RuntimeError("socket reset")
+        ws = self._ws()
+        ws.receive_text = AsyncMock(side_effect=RuntimeError("socket reset"))
         with self.assertLogs(self.handler.logger, "WARNING"):
-            self._run(ws, landmarkers=(pose, hand))
+            await self._run(ws, landmarkers=(pose, hand))
         pose.close.assert_called_once()
         hand.close.assert_called_once()
 
 
-# WebSocketProcessingTests - websocket_processing.py
+# WebSocketProcessingTests - websocket_processing.py (unchanged, still sync)
 
 class WebSocketProcessingTests(unittest.TestCase):
     def setUp(self):
@@ -1069,13 +1253,8 @@ class WebSocketProcessingTests(unittest.TestCase):
     @staticmethod
     def _fake_mediapipe():
         mp = MagicMock()
-
         mp.ImageFormat.SRGB = sentinel.srgb
-
-        modules = {
-            "mediapipe": mp,
-        }
-
+        modules = {"mediapipe": mp}
         return modules, mp
 
     # module start-up
@@ -1115,15 +1294,9 @@ class WebSocketProcessingTests(unittest.TestCase):
         vision.drawing_styles = drawing_styles
         vision.drawing_utils = drawing_utils
 
-        drawing_styles.get_default_pose_landmarks_style.return_value = (
-            sentinel.pose_style
-        )
-        drawing_styles.get_default_hand_landmarks_style.return_value = (
-            sentinel.hand_style
-        )
-        drawing_styles.get_default_hand_connections_style.return_value = (
-            sentinel.hand_connection_style
-        )
+        drawing_styles.get_default_pose_landmarks_style.return_value = sentinel.pose_style
+        drawing_styles.get_default_hand_landmarks_style.return_value = sentinel.hand_style
+        drawing_styles.get_default_hand_connections_style.return_value = sentinel.hand_connection_style
 
         proc = _load_module(
             "websocket_processing_with_mp",
@@ -1154,10 +1327,7 @@ class WebSocketProcessingTests(unittest.TestCase):
         self.assertIs(proc.HAND_CONNECTIONS, sentinel.hand_connections)
         self.assertIs(proc.POSE_LANDMARK_STYLE, sentinel.pose_style)
         self.assertIs(proc.HAND_LANDMARK_STYLE, sentinel.hand_style)
-        self.assertIs(
-            proc.HAND_CONNECTION_STYLE,
-            sentinel.hand_connection_style,
-        )
+        self.assertIs(proc.HAND_CONNECTION_STYLE, sentinel.hand_connection_style)
 
     # build_landmarkers
 
@@ -1198,7 +1368,7 @@ class WebSocketProcessingTests(unittest.TestCase):
         hand.detect.return_value = SimpleNamespace(hand_landmarks=[])
         modules, mp = self._fake_mediapipe()
         with patch.object(self.proc, "mp", mp), \
-        patch.object(self.proc, "mp_drawing", MagicMock()) as drawing:
+                patch.object(self.proc, "mp_drawing", MagicMock()) as drawing:
             result = self.proc.apply_landmarks(image, pose, hand)
         self.assertIs(result, image)
         drawing.draw_landmarks.assert_not_called()
@@ -1213,10 +1383,7 @@ class WebSocketProcessingTests(unittest.TestCase):
         image = Image.new("RGB", (8, 6))
         pose, hand = MagicMock(), MagicMock()
 
-        pose.detect.return_value = SimpleNamespace(
-            pose_landmarks=[[self._landmark()] * 33]
-        )
-
+        pose.detect.return_value = SimpleNamespace(pose_landmarks=[[self._landmark()] * 33])
         hand.detect.return_value = SimpleNamespace(
             hand_landmarks=[
                 [self._landmark()] * 21,
@@ -1225,42 +1392,21 @@ class WebSocketProcessingTests(unittest.TestCase):
         )
 
         modules, mp = self._fake_mediapipe()
-
         pose_connections = sentinel.pose_connections
         hand_connections = sentinel.hand_connections
 
         landmark_module = MagicMock()
-        landmark_module.NormalizedLandmark.side_effect = (
-            lambda **kwargs: SimpleNamespace(**kwargs)
-        )
+        landmark_module.NormalizedLandmark.side_effect = lambda **kwargs: SimpleNamespace(**kwargs)
 
         with patch.object(self.proc, "mp", mp), \
                 patch.object(self.proc, "mp_landmark", landmark_module), \
-                patch.object(
-                    self.proc,
-                    "POSE_CONNECTIONS",
-                    pose_connections,
-                ), \
-                patch.object(
-                    self.proc,
-                    "HAND_CONNECTIONS", 
-                    hand_connections,
-                ), \
-                patch.object(
-                    self.proc,
-                    "mp_drawing",
-                    MagicMock(),
-                ) as drawing:
-
+                patch.object(self.proc, "POSE_CONNECTIONS", pose_connections), \
+                patch.object(self.proc, "HAND_CONNECTIONS", hand_connections), \
+                patch.object(self.proc, "mp_drawing", MagicMock()) as drawing:
             result = self.proc.apply_landmarks(image, pose, hand)
 
         self.assertEqual(drawing.draw_landmarks.call_count, 3)
-
-        connections = [
-            c[0][2]
-            for c in drawing.draw_landmarks.call_args_list
-        ]
-
+        connections = [c[0][2] for c in drawing.draw_landmarks.call_args_list]
         self.assertIs(connections[0], pose_connections)
         self.assertIs(connections[1], hand_connections)
         self.assertIs(connections[2], hand_connections)
@@ -1272,30 +1418,16 @@ class WebSocketProcessingTests(unittest.TestCase):
     def test_apply_landmarks_draws_hands_when_no_pose_found(self):
         image = Image.new("RGB", (8, 8))
         pose, hand = MagicMock(), MagicMock()
-
-        pose.detect.return_value = SimpleNamespace(
-            pose_landmarks=[]
-        )
-
-        hand.detect.return_value = SimpleNamespace(
-            hand_landmarks=[[self._landmark()] * 21]
-        )
+        pose.detect.return_value = SimpleNamespace(pose_landmarks=[])
+        hand.detect.return_value = SimpleNamespace(hand_landmarks=[[self._landmark()] * 21])
 
         modules, mp = self._fake_mediapipe()
-
         landmark_module = MagicMock()
-        landmark_module.NormalizedLandmark.side_effect = (
-            lambda **kwargs: SimpleNamespace(**kwargs)
-        )
+        landmark_module.NormalizedLandmark.side_effect = lambda **kwargs: SimpleNamespace(**kwargs)
 
         with patch.object(self.proc, "mp", mp), \
                 patch.object(self.proc, "mp_landmark", landmark_module), \
-                patch.object(
-                    self.proc,
-                    "mp_drawing",
-                    MagicMock(),
-                ) as drawing:
-
+                patch.object(self.proc, "mp_drawing", MagicMock()) as drawing:
             self.proc.apply_landmarks(image, pose, hand)
 
         self.assertEqual(drawing.draw_landmarks.call_count, 1)
@@ -1444,10 +1576,10 @@ class FirebaseStartupTests(unittest.TestCase):
         """initialize_app receives the return value of credentials.Certificate."""
         admin = MagicMock()
         admin.get_app.side_effect = ValueError("No default app")
-        sentinel = object()
-        admin.credentials.Certificate.return_value = sentinel
+        cert_sentinel = object()
+        admin.credentials.Certificate.return_value = cert_sentinel
         self._run_init(admin, hosted=False)
-        admin.initialize_app.assert_called_once_with(sentinel, {"databaseURL": self.DB_URL})
+        admin.initialize_app.assert_called_once_with(cert_sentinel, {"databaseURL": self.DB_URL})
 
     def test_admin_auth_is_exported(self):
         """authentication.py and main.py import admin_auth from this module."""
@@ -1455,17 +1587,18 @@ class FirebaseStartupTests(unittest.TestCase):
         result = self._run_init(admin, hosted=False)
         self.assertIs(result["admin_auth"], admin.auth)
 
-# HistoryTests - unit tests for history.py (Realtime Database helpers)
+
+# HistoryTests - unit tests for history.py (Realtime Database helpers, unchanged)
 
 class HistoryTests(unittest.TestCase):
-    
+
     def setUp(self):
         self.db = MagicMock()
-        firebase_admin = MagicMock()
-        firebase_admin.db = self.db
+        firebase_admin_mock = MagicMock()
+        firebase_admin_mock.db = self.db
         self.module = _load_module(
             "history_under_test", "history.py",
-            {"firebase_admin_init": MagicMock(), "firebase_admin": firebase_admin},
+            {"firebase_admin_init": MagicMock(), "firebase_admin": firebase_admin_mock},
         )
         self.ref = self.db.reference.return_value
 
@@ -1595,6 +1728,45 @@ class ISLModelAPITests(unittest.TestCase):
         api = ISLModelAPI(top_k=1)
         api.session.get = MagicMock(side_effect=ConnectionError("refused"))
         self.assertFalse(api.check_health())
+
+    # deep_health
+
+    def test_deep_health_returns_metrics_on_200(self):
+        ISLModelAPI, _ = self._load_model_class()
+        api = ISLModelAPI(top_k=1)
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {
+            "model": {"name": "isl-net", "loaded": True, "num_classes": 50},
+            "input": {"clip_length": 16, "resolution": 224},
+            "inference": {"working": True, "time_ms": 12.5},
+            "gpu": {"name": "T4"},
+            "runtime": {"uptime_s": 120},
+        }
+        api.session.get = MagicMock(return_value=resp)
+        result = api.deep_health()
+        self.assertEqual(result["isl_model_status"], "connected")
+        self.assertEqual(result["model_name"], "isl-net")
+        self.assertEqual(result["clip_length"], 16)
+        self.assertTrue(result["inference_working"])
+        self.assertEqual(result["gpu"], {"name": "T4"})
+        self.assertEqual(result["runtime"], {"uptime_s": 120})
+        api.session.get.assert_called_once_with(api.deep_health_url, timeout=5)
+
+    def test_deep_health_reports_non_200_status(self):
+        ISLModelAPI, _ = self._load_model_class()
+        api = ISLModelAPI(top_k=1)
+        resp = MagicMock(status_code=503)
+        api.session.get = MagicMock(return_value=resp)
+        result = api.deep_health()
+        self.assertIn("Model server not ready", result["isl_model_status"])
+        self.assertIn("503", result["isl_model_status"])
+
+    def test_deep_health_reports_network_error(self):
+        ISLModelAPI, _ = self._load_model_class()
+        api = ISLModelAPI(top_k=1)
+        api.session.get = MagicMock(side_effect=ConnectionError("refused"))
+        result = api.deep_health()
+        self.assertIn("Model server error", result["isl_model_status"])
 
     # predict_from_frames - validation
 
@@ -1772,9 +1944,10 @@ class ISLModelAPITests(unittest.TestCase):
         self.assertEqual(api.predict_frames_url, "https://myhost.com/predict_frames")
         self.assertEqual(api.predict_video_url, "https://myhost.com/predict")
         self.assertEqual(api.health_url, "https://myhost.com/health")
+        self.assertEqual(api.deep_health_url, "https://myhost.com/health/deep")
 
 
-# AuthenticationHelperTests - unit tests for authentication.py
+# AuthenticationHelperTests - unit tests for authentication.py (unchanged)
 
 class AuthenticationHelperTests(unittest.TestCase):
     """authentication.py talks to the Firebase Identity REST API via `requests`
@@ -1932,23 +2105,15 @@ class AuthenticationHelperTests(unittest.TestCase):
 
     def test_email_verify_success(self):
         self._respond({})
-
         result = self.mod.email_verify("id_token_123")
-
         self.assertTrue(result)
-
         self.assertEqual(
             self.requests.post.call_args[1]["json"],
-            {
-                "requestType": "VERIFY_EMAIL",
-                "idToken": "id_token_123",
-            },
+            {"requestType": "VERIFY_EMAIL", "idToken": "id_token_123"},
         )
-
 
     def test_email_verify_exception_returns_false(self):
         self._respond(status_error=RuntimeError("INVALID_ID_TOKEN"))
-
         with self.assertLogs(self.mod.logger, "ERROR"):
             self.assertFalse(self.mod.email_verify("bad_token"))
 

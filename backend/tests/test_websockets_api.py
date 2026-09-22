@@ -28,7 +28,6 @@ if not JWT_TOKEN:
 
 DEFAULT_URL = (
     "ws://127.0.0.1:5000/ws"
-    f"?token={JWT_TOKEN}"
 )
 
 
@@ -81,6 +80,9 @@ async def test_websocket(
 
     async with websockets.connect(
         ws_url,
+        additional_headers={
+            "Authorization": "Bearer " + JWT_TOKEN,
+        },
         max_size=None,
         ping_interval=20,
         ping_timeout=20,
