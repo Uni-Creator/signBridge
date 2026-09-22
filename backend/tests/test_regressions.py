@@ -6,6 +6,7 @@ WebSocket handler, the processing helpers and the auth/history helpers run.
 
 Run from the repository root: python -m unittest discover -s backend/tests -v
 """
+from PIL import ImageCms
 import base64
 import importlib.util
 import itertools
@@ -16,11 +17,11 @@ import sys
 import tempfile
 import unittest
 from concurrent.futures import Future
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch, sentinel
 
 # Import real runtime dependencies BEFORE any test swaps modules in sys.modules.
 # patch.dict(sys.modules) drops anything first imported inside the patch, so
@@ -1068,13 +1069,13 @@ class WebSocketProcessingTests(unittest.TestCase):
     @staticmethod
     def _fake_mediapipe():
         mp = MagicMock()
-        formats = MagicMock()
+
+        mp.ImageFormat.SRGB = sentinel.srgb
+
         modules = {
             "mediapipe": mp,
-            "mediapipe.framework": MagicMock(),
-            "mediapipe.framework.formats": formats,
-            "mediapipe.framework.formats.landmark_pb2": formats.landmark_pb2,
         }
+
         return modules, mp
 
     # module start-up
@@ -1093,23 +1094,70 @@ class WebSocketProcessingTests(unittest.TestCase):
         self.assertFalse(proc.MEDIAPIPE_OK)
 
     def test_mediapipe_enabled_when_import_succeeds(self):
-        mp, tasks, python, vision = MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        mp = MagicMock()
+        tasks = MagicMock()
+        python = MagicMock()
+        vision = MagicMock()
+        components = MagicMock()
+        containers = MagicMock()
+        landmark = MagicMock()
+        drawing_styles = MagicMock()
+        drawing_utils = MagicMock()
+
         tasks.python = python
         python.vision = vision
+        python.components = components
+        components.containers = containers
+        containers.landmark = landmark
+
+        vision.PoseLandmarksConnections.POSE_LANDMARKS = sentinel.pose_connections
+        vision.HandLandmarksConnections.HAND_CONNECTIONS = sentinel.hand_connections
+        vision.drawing_styles = drawing_styles
+        vision.drawing_utils = drawing_utils
+
+        drawing_styles.get_default_pose_landmarks_style.return_value = (
+            sentinel.pose_style
+        )
+        drawing_styles.get_default_hand_landmarks_style.return_value = (
+            sentinel.hand_style
+        )
+        drawing_styles.get_default_hand_connections_style.return_value = (
+            sentinel.hand_connection_style
+        )
+
         proc = _load_module(
-            "websocket_processing_with_mp", "websocket_processing.py",
+            "websocket_processing_with_mp",
+            "websocket_processing.py",
             fake_modules={
                 "mediapipe": mp,
                 "mediapipe.tasks": tasks,
                 "mediapipe.tasks.python": python,
                 "mediapipe.tasks.python.vision": vision,
+                "mediapipe.tasks.python.components": components,
+                "mediapipe.tasks.python.components.containers": containers,
+                "mediapipe.tasks.python.components.containers.landmark": landmark,
+                "mediapipe.tasks.python.vision.drawing_styles": drawing_styles,
+                "mediapipe.tasks.python.vision.drawing_utils": drawing_utils,
             },
             env={"ENABLE_MEDIAPIPE": "1"},
         )
+
         self.assertTrue(proc.MEDIAPIPE_OK)
-        self.assertIs(proc.mp_drawing, mp.solutions.drawing_utils)
+        self.assertIs(proc.mp, mp)
         self.assertIs(proc.mp_vision, vision)
         self.assertIs(proc.mp_python, python)
+        self.assertIs(proc.mp_landmark, landmark)
+        self.assertIs(proc.mp_styles, drawing_styles)
+        self.assertIs(proc.mp_drawing, drawing_utils)
+
+        self.assertIs(proc.POSE_CONNECTIONS, sentinel.pose_connections)
+        self.assertIs(proc.HAND_CONNECTIONS, sentinel.hand_connections)
+        self.assertIs(proc.POSE_LANDMARK_STYLE, sentinel.pose_style)
+        self.assertIs(proc.HAND_LANDMARK_STYLE, sentinel.hand_style)
+        self.assertIs(
+            proc.HAND_CONNECTION_STYLE,
+            sentinel.hand_connection_style,
+        )
 
     # build_landmarkers
 
@@ -1126,7 +1174,10 @@ class WebSocketProcessingTests(unittest.TestCase):
         self.assertIs(hand, vision.HandLandmarker.create_from_options.return_value)
         self.assertEqual(vision.HandLandmarkerOptions.call_args[1]["num_hands"], 2)
         model_paths = [c[1]["model_asset_path"] for c in python.BaseOptions.call_args_list]
-        self.assertEqual(model_paths, ["pose_landmarker_full.task", "hand_landmarker.task"])
+        self.assertEqual(
+            [Path(path).name for path in model_paths],
+            ["pose_landmarker_full.task", "hand_landmarker.task"],
+        )
 
     def test_build_landmarkers_returns_none_pair_on_init_failure(self):
         vision = MagicMock()
@@ -1145,9 +1196,9 @@ class WebSocketProcessingTests(unittest.TestCase):
         pose, hand = MagicMock(), MagicMock()
         pose.detect.return_value = SimpleNamespace(pose_landmarks=[])
         hand.detect.return_value = SimpleNamespace(hand_landmarks=[])
-        modules, _ = self._fake_mediapipe()
-        with patch.dict(sys.modules, modules), \
-                patch.object(self.proc, "mp_drawing", MagicMock()) as drawing:
+        modules, mp = self._fake_mediapipe()
+        with patch.object(self.proc, "mp", mp), \
+        patch.object(self.proc, "mp_drawing", MagicMock()) as drawing:
             result = self.proc.apply_landmarks(image, pose, hand)
         self.assertIs(result, image)
         drawing.draw_landmarks.assert_not_called()
@@ -1161,19 +1212,59 @@ class WebSocketProcessingTests(unittest.TestCase):
     def test_apply_landmarks_draws_pose_and_every_hand(self):
         image = Image.new("RGB", (8, 6))
         pose, hand = MagicMock(), MagicMock()
-        pose.detect.return_value = SimpleNamespace(pose_landmarks=[[self._landmark()] * 33])
-        hand.detect.return_value = SimpleNamespace(
-            hand_landmarks=[[self._landmark()] * 21, [self._landmark()] * 21]
+
+        pose.detect.return_value = SimpleNamespace(
+            pose_landmarks=[[self._landmark()] * 33]
         )
+
+        hand.detect.return_value = SimpleNamespace(
+            hand_landmarks=[
+                [self._landmark()] * 21,
+                [self._landmark()] * 21,
+            ]
+        )
+
         modules, mp = self._fake_mediapipe()
-        with patch.dict(sys.modules, modules), \
-                patch.object(self.proc, "mp_drawing", MagicMock()) as drawing:
+
+        pose_connections = sentinel.pose_connections
+        hand_connections = sentinel.hand_connections
+
+        landmark_module = MagicMock()
+        landmark_module.NormalizedLandmark.side_effect = (
+            lambda **kwargs: SimpleNamespace(**kwargs)
+        )
+
+        with patch.object(self.proc, "mp", mp), \
+                patch.object(self.proc, "mp_landmark", landmark_module), \
+                patch.object(
+                    self.proc,
+                    "POSE_CONNECTIONS",
+                    pose_connections,
+                ), \
+                patch.object(
+                    self.proc,
+                    "HAND_CONNECTIONS", 
+                    hand_connections,
+                ), \
+                patch.object(
+                    self.proc,
+                    "mp_drawing",
+                    MagicMock(),
+                ) as drawing:
+
             result = self.proc.apply_landmarks(image, pose, hand)
+
         self.assertEqual(drawing.draw_landmarks.call_count, 3)
-        connections = [c[0][2] for c in drawing.draw_landmarks.call_args_list]
-        self.assertIs(connections[0], mp.solutions.pose.POSE_CONNECTIONS)
-        self.assertIs(connections[1], mp.solutions.hands.HAND_CONNECTIONS)
-        self.assertIs(connections[2], mp.solutions.hands.HAND_CONNECTIONS)
+
+        connections = [
+            c[0][2]
+            for c in drawing.draw_landmarks.call_args_list
+        ]
+
+        self.assertIs(connections[0], pose_connections)
+        self.assertIs(connections[1], hand_connections)
+        self.assertIs(connections[2], hand_connections)
+
         self.assertIsInstance(result, Image.Image)
         self.assertIsNot(result, image)
         self.assertEqual((result.mode, result.size), ("RGB", (8, 6)))
@@ -1181,12 +1272,32 @@ class WebSocketProcessingTests(unittest.TestCase):
     def test_apply_landmarks_draws_hands_when_no_pose_found(self):
         image = Image.new("RGB", (8, 8))
         pose, hand = MagicMock(), MagicMock()
-        pose.detect.return_value = SimpleNamespace(pose_landmarks=[])
-        hand.detect.return_value = SimpleNamespace(hand_landmarks=[[self._landmark()] * 21])
-        modules, _ = self._fake_mediapipe()
-        with patch.dict(sys.modules, modules), \
-                patch.object(self.proc, "mp_drawing", MagicMock()) as drawing:
+
+        pose.detect.return_value = SimpleNamespace(
+            pose_landmarks=[]
+        )
+
+        hand.detect.return_value = SimpleNamespace(
+            hand_landmarks=[[self._landmark()] * 21]
+        )
+
+        modules, mp = self._fake_mediapipe()
+
+        landmark_module = MagicMock()
+        landmark_module.NormalizedLandmark.side_effect = (
+            lambda **kwargs: SimpleNamespace(**kwargs)
+        )
+
+        with patch.object(self.proc, "mp", mp), \
+                patch.object(self.proc, "mp_landmark", landmark_module), \
+                patch.object(
+                    self.proc,
+                    "mp_drawing",
+                    MagicMock(),
+                ) as drawing:
+
             self.proc.apply_landmarks(image, pose, hand)
+
         self.assertEqual(drawing.draw_landmarks.call_count, 1)
 
     # process_frame

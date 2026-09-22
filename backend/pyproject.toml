@@ -1,0 +1,35 @@
+[project]
+name = "signbridge-backend"
+version = "0.1.0"
+description = "SignBridge backend: Flask REST API and WebSocket sign-language translation"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    # Web app
+    "flask==3.1.3",
+    "flask-cors==6.0.5",
+    "flask-sock==0.7.0",
+    "flask-limiter==4.1.1",
+    # Validation
+    "pydantic[email]==2.13.5",
+    # Firebase / auth
+    "firebase-admin==7.5.0",
+    # Image + landmark processing
+    "numpy==2.2.6",
+    "pillow==12.3.0",
+    "opencv-python-headless==5.0.0.93",
+    "mediapipe==1.0.1",
+    # HTTP / config / server
+    "requests==2.34.2",
+    "python-dotenv==1.2.3",
+    "gunicorn==26.2.0",
+]
+
+[tool.uv]
+package = false  # an application, not an installable library
+override-dependencies = [
+    # mediapipe 1.0.1 hard-requires opencv-contrib-python (a desktop/Qt build that
+    # needs libGL on the host and shares the cv2/ folder with the headless build).
+    # The impossible marker removes that requirement, so the lockfile carries only
+    # opencv-python-headless. mediapipe itself only calls core OpenCV functions.
+    "opencv-contrib-python; sys_platform == 'never'",
+]
