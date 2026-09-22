@@ -1,3 +1,4 @@
+import logging
 import base64
 import os
 import time
@@ -8,6 +9,8 @@ from dotenv import load_dotenv
 from PIL import Image
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class ISLModelAPI:
@@ -107,11 +110,10 @@ class ISLModelAPI:
                     )
                 }
 
-        except Exception as e:
+        except Exception:
+            logger.exception("Deep health check failed")
             return {
-                "isl_model_status": (
-                    f"Model server error: {str(e)}"
-                )
+                "isl_model_status": "Model server unavailable"
             }
 
     # Frames path (primary real-time path)
