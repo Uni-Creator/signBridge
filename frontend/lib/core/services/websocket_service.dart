@@ -29,14 +29,14 @@ class WebSocketService {
 
   Future<void> connect(String token) async {
     try {
-      final uri = Uri.parse(wsUrl).replace(
-        queryParameters: {
-          ...Uri.parse(wsUrl).queryParameters,
-          'token': token,
+      final uri = Uri.parse(wsUrl);
+
+      _channel = WebSocketChannel.connect(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $token',
         },
       );
-
-      _channel = WebSocketChannel.connect(uri);
 
       await _channel!.ready;
 
@@ -56,7 +56,6 @@ class WebSocketService {
           _isConnected = false;
           onConnectionChange?.call(false);
         },
-        cancelOnError: false,
       );
     } catch (e) {
       _isConnected = false;

@@ -1,45 +1,45 @@
 # main.py
 """
-SignBridge Backend - Flask + WebSocket Server
-============================================
+SignBridge Backend - FastAPI + WebSocket Server
+================================================
 Endpoints:
-  POST /register       -> Firebase user registration
-  POST /login          -> Firebase user login
-  POST /forgot-password -> Send password reset email
-  GET  /history        -> Retrieve translation history
-  POST /history        -> Store a translation
-  WS   /ws             -> Real-time sign detection
+  POST /register        -> Firebase user registration
+  POST /login            -> Firebase user login
+  POST /logout            -> Firebase user logout
+  POST /forgot-password   -> Send password reset email
+  POST /update-password   -> Update password (auth required)
+  GET  /history           -> Retrieve translation history
+  POST /history/store     -> Store a translation
+  DELETE /history/<id>    -> Delete a translation
+  DELETE /history/clear   -> Delete all translations
+  WS   /ws                -> Real-time sign detection
+
+Migrated from Flask + flask-sock + flask-limiter to FastAPI + native
+ASGI WebSockets + slowapi.
 """
 import os
-# import base64
-# import gc
-import json
 import logging
-# import time
-# from collections import deque
-# from io import BytesIO
+import threading
+import concurrent.futures
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# import cv2
-# import numpy as np
+from fastapi import FastAPI, Request, Header, Depends, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.concurrency import run_in_threadpool
 
-import concurrent.futures
-from flask import Flask, request
-from flask_cors import CORS
-from flask_sock import Sock
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from flask_limiter.errors import RateLimitExceeded
-from pydantic import BaseModel, Field, EmailStr, ValidationError, ConfigDict
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
-import re
-
-
-def get_user_id():
-    return getattr(request, "user_id", get_remote_address())
-
+from pydantic import BaseModel, Field, EmailStr, ConfigDict
 
 #  App setup 
 from authentication import register_account, login_account, logout_user, forgot_password, update_password
@@ -47,9 +47,6 @@ from history import retrieve_history, store_translation, delete_translation, del
 from websocket_handler import handle_websocket
 from model import ISLModelAPI
 from firebase_admin_init import admin_auth
-from functools import wraps
-from flask import request, jsonify
-
 
 
 logging.basicConfig(
@@ -58,63 +55,64 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app  = Flask(__name__)
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+model_api = ISLModelAPI(top_k=1)
+
+CLIP_LENGTH = 16
+FRAME_DELAY = 0.08
+RESIZE_DIM = 224
+
+_SAVE_TEST_VIDEOS = os.environ.get("SAVE_TEST_VIDEOS", "0") == "1"
+
+
+#  Rate limiting 
+# The rate-limit key is the authenticated Firebase uid when available
+# (set on request.state.user_id by the require_auth dependency), and
+# falls back to the client's remote address for unauthenticated routes.
+def get_user_id(request: Request) -> str:
+    return getattr(request.state, "user_id", None) or get_remote_address(request)
+
+
 limiter = Limiter(
-    get_user_id,
-    app=app,
-    default_limits=["100 per minute", "5000 per day"]
-)
+    key_func=get_user_id, 
+    default_limits = [
+        "100/minute", 
+        "5000/day"
+        ]
+    )
+
+
+#  Lifespan (startup/shutdown) 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Wake up the HF Space in the background at startup.
+    threading.Thread(
+        target=model_api.check_health, 
+        daemon=True
+        ).start()
+    yield
+    executor.shutdown(wait=False)
+
+
+app = FastAPI(lifespan=lifespan)
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
 allowed_origins_str = os.environ.get(
     "ALLOWED_ORIGINS",
     "http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000,app://signbridge"
 )
 allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
-CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
-sock = Sock(app)
-
-executor  = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-model_api = ISLModelAPI(top_k=1)
-
-CLIP_LENGTH = 16
-FRAME_DELAY = 0.08
-RESIZE_DIM  = 224
-
-# Wake up HF Space in background at startup
-import threading
-threading.Thread(target=model_api.check_health, daemon=True).start()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-_SAVE_TEST_VIDEOS = os.environ.get("SAVE_TEST_VIDEOS", "0") == "1"
-
-
-def require_auth(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return jsonify({"error": "Missing or invalid token"}), 401
-
-        token = auth_header.split(" ", 1)[1]
-
-        if not token:
-            return jsonify({
-                "error": "Missing or invalid token"
-            }), 401
-        try:
-            decoded = admin_auth.verify_id_token(
-                token,
-                check_revoked=True
-            )
-        except admin_auth.ExpiredIdTokenError:
-            return jsonify({"error": "Token expired"}), 401
-        except admin_auth.RevokedIdTokenError:
-            return jsonify({"error": "Token revoked"}), 401
-        except Exception:
-            return jsonify({"error": "Invalid token"}), 401
-        request.user_id = decoded["uid"]
-        return f(*args, **kwargs)
-    return wrapper
-
+#  Request models
 class AuthRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -140,295 +138,315 @@ class StoreTranslationRequest(BaseModel):
     translation: str = Field(min_length=1, max_length=5000)
 
 
-def validate_body(model):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            try:
-                data = request.get_json(silent=True)
-                validated = model.model_validate(data)
+#  Auth dependency 
+async def require_auth(
+    request: Request,
+    authorization: str = Header(default=""),
+) -> str:
+    if not authorization.startswith("Bearer "):
+        raise StarletteHTTPException(
+            status_code=401, 
+            detail="Missing or invalid token"
+            )
 
-            except ValidationError as e:
-                errors = []
+    token = authorization.split(" ", 1)[1]
 
-                for error in e.errors():
-                    field = ".".join(str(x) for x in error["loc"])
+    if not token:
+        raise StarletteHTTPException(
+            status_code=401, 
+            detail="Missing or invalid token"
+            )
 
-                    errors.append({
-                        "field": field,
-                        "message": error["msg"]
-                    })
+    try:
 
-                return jsonify({
-                    "error": "Invalid request body",
-                    "details": errors
-                }), 400
+        decoded = await run_in_threadpool(
+            admin_auth.verify_id_token, token, check_revoked=True
+        )
+    except admin_auth.ExpiredIdTokenError:
+        raise StarletteHTTPException(
+            status_code=401, 
+            detail="Token expired"
+            )
+    except admin_auth.RevokedIdTokenError:
+        raise StarletteHTTPException(
+            status_code=401, 
+            detail="Token revoked"
+            )
+    except Exception:
+        raise StarletteHTTPException(
+            status_code=401, 
+            detail="Invalid token"
+            )
 
-            request.validated_data = validated
-            return func(*args, **kwargs)
-
-        return wrapper
-    return decorator
+    request.state.user_id = decoded["uid"]
+    return decoded["uid"]
 
 
+#  Error handlers 
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code = exc.status_code, 
+        content = {
+            "error": exc.detail
+            }
+        )
 
-@app.errorhandler(RateLimitExceeded)
-@app.errorhandler(429)
-def ratelimit_handler(e):
-    return jsonify({
-        "error": str(e.description)
-    }), 429
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = []
+    for error in exc.errors():
+
+        field = ".".join(str(x) for x in error["loc"] if x != "body")
+
+        errors.append(
+            {
+                "field": field, 
+                "message": error["msg"]
+            }
+        )
+
+    return JSONResponse(
+        status_code = 400, 
+        content = {
+            "error": "Invalid request body", 
+            "details": errors
+            }
+        )
+
+
+@app.exception_handler(RateLimitExceeded)
+async def ratelimit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code = 429, 
+        content = {
+            "error": str(exc.detail)
+            }
+        )
 
 
 #  REST routes 
-@app.route("/")
-def index():
-    return json.dumps({"message": "SignBridge API is running", "version": "2.0"})
+@app.get("/")
+async def index():
+    return {
+        "message": "SignBridge API is running", 
+        "version": "2.0"
+        }
 
 
-
-
-@app.route("/register", methods=["POST"])
-@limiter.limit(
-    "5 per minute", 
-    error_message="Too many registration attempts. Please try again later."
-)
-@validate_body(AuthRequest)
-def register():
-    account = request.validated_data
-
+@app.post("/register")
+@limiter.limit("5/minute", error_message="Too many registration attempts. Please try again later.")
+async def register(request: Request, account: AuthRequest):
     res = register_account(account.email, account.password)
 
     if not res:
-        return json.dumps({
-            "id": "", 
-            "token": "",
-            "error": "Registration failed"
-            }), 400
+        return JSONResponse(
+            status_code = 400,
+            content = {
+                "id": "", 
+                "token": "", 
+                "error": "Registration failed"
+                },
+        )
 
-    logger.info(f"Registered user")
-    return json.dumps(res), 200
+    logger.info("Registered user")
+    return res
 
 
-@app.route("/login", methods=["POST"])
-@limiter.limit(
-    "5 per minute", 
-    error_message="Too many login attempts. Please try again later."
-)
-@validate_body(AuthRequest)
-def login():
-    account = request.validated_data
-
+@app.post("/login")
+@limiter.limit("5/minute", error_message="Too many login attempts. Please try again later.")
+async def login(request: Request, account: AuthRequest):
     res = login_account(account.email, account.password)
+
     if not res:
-        return json.dumps({
-            "id": "", 
-            "token": "",
-            "error": "Login failed"
-            }), 400
-    logger.info(f"Login: user logged in using email")
-    return json.dumps(res), 200
+        return JSONResponse(
+            status_code = 400,
+            content = {
+                "id": "", 
+                "token": "", 
+                "error": "Login failed"
+                },
+        )
+
+    logger.info("Login: user logged in using email")
+    return res
 
 
-
-@app.route("/logout", methods=["POST"])
-@require_auth
-@limiter.limit(
-    "10 per minute",
-    error_message="Too many logout requests. Please try again later."
-)
-def logout():
-    user_id = request.user_id
+@app.post("/logout")
+@limiter.limit("10/minute", error_message="Too many logout requests. Please try again later.")
+async def logout(request: Request, user_id: str = Depends(require_auth)):
 
     try:
-        logout_user(user_id)
 
-        return jsonify({
+        logout_user(user_id)
+        return {
             "message": "Logged out successfully"
-        }), 200
+            }
 
     except Exception:
         logger.exception("Failed to logout user")
-
-        return jsonify({
-            "error": "Logout failed"
-        }), 500
+        raise StarletteHTTPException(status_code=500, detail="Logout failed")
 
 
-@app.route("/forgot-password", methods=["POST"])
-@limiter.limit(
-    "3 per minute", 
-    error_message="Too many forgot password attempts. Please try again later."
-)
-@validate_body(ForgotPasswordRequest)
-def forgot_pwd():
-    account = request.validated_data
-
+@app.post("/forgot-password")
+@limiter.limit("3/minute", error_message="Too many forgot password attempts. Please try again later.")
+async def forgot_pwd(request: Request, account: ForgotPasswordRequest):
     forgot_password(account.email)
-    
+
     logger.info("Password reset request received")
 
-    return jsonify({
+    return {
         "success": "Password reset email has been sent."
-    }), 200
+        }
 
 
-
-@app.route("/update-password", methods=["POST"])
-@limiter.limit(
-    "3 per minute",
-    error_message="Too many password update attempts. Please try again later."
-)
-@require_auth
-@validate_body(ResetPasswordRequest)
-def update_pwd():
-    user_id = request.user_id
-    account = request.validated_data
-
+@app.post("/update-password")
+@limiter.limit("3/minute", error_message="Too many password update attempts. Please try again later.")
+async def update_pwd(
+    request: Request,
+    account: ResetPasswordRequest,
+    user_id: str = Depends(require_auth),
+):
     status = update_password(user_id, account.password)
 
     if not status:
-        return jsonify({
-            "error": "Password update failed."
-        }), 500
+        raise StarletteHTTPException(
+            status_code = 500, 
+            detail = "Password update failed."
+            )
 
     logger.info("Password updated successfully.")
-
-    return jsonify({
+    
+    return {
         "success": "Password has been updated."
-    }), 200
+        }
 
 
-
-@app.route("/history", methods=["GET"])
-@require_auth
-@limiter.limit(
-    "20 per minute", 
-    error_message="Too many history requests. Please try again later."
-)
-def get_history():
-    user_id = request.user_id
-
+@app.get("/history")
+@limiter.limit("20/minute", error_message="Too many history requests. Please try again later.")
+async def get_history(request: Request, user_id: str = Depends(require_auth)):
+    
     try:
-        return json.dumps({
+        return {
             "history": retrieve_history(user_id)
-        }), 200
+            }
 
     except Exception:
-        logger.exception(
-            "Failed to retrieve history",
-        )
-        return json.dumps({
-            "history": "",
-            "error": "Failed to retrieve history"
-        }), 500
+        logger.exception("Failed to retrieve history")
+
+        return JSONResponse(
+            status_code = 500,
+            content = {
+                "history": "", 
+                "error": "Failed to retrieve history"
+                }
+            )
 
 
-
-@app.route("/history/store", methods=["POST"])
-@require_auth
-@limiter.limit(
-    "50 per minute", 
-    error_message="Too many store requests. Please try again later."
-)
-@validate_body(StoreTranslationRequest)
-def store_history():
-    user_id = request.user_id
-    data = request.validated_data
-
+@app.post("/history/store", status_code=201)
+@limiter.limit("50/minute", error_message="Too many store requests. Please try again later.")
+async def store_history(
+    request: Request,
+    data: StoreTranslationRequest,
+    user_id: str = Depends(require_auth),
+):
     try:
-        item = store_translation(
-            user_id,
-            data.translation
-        )
+        item = store_translation(user_id, data.translation)
+        return item
 
-        return jsonify(item), 201
+    except Exception:   
+        logger.exception("Failed to store history")
 
-    except Exception:
-        logger.exception(
-            "Failed to store history"
-        )
-        return jsonify({
-            "error": "Failed to store history"
-        }), 500
+        raise StarletteHTTPException(
+            status_code = 500, 
+            detail = "Failed to store history"
+            )
 
-
-
-@app.route("/history/<translation_id>", methods=["DELETE"])
-@require_auth
-@limiter.limit(
-    "50 per minute", 
-    error_message="Too many delete history requests. Please try again later."
-)
-def delete_history(translation_id):
-    user_id = request.user_id
-
-    try:
-        deleted = delete_translation(
-            user_id,
-            translation_id
-        )
-
-        if not deleted:
-            return jsonify({
-                "error": "Translation not found"
-            }), 404
-
-        return jsonify({
-            "message": "Translation deleted"
-        }), 200
-
-    except Exception:
-        logger.exception(
-            "Failed to delete history"
-        )
-        return jsonify({
-            "error": "Failed to delete history"
-        }), 500
-
-
-
-@app.route("/history/clear", methods=["DELETE"])
-@require_auth
-@limiter.limit(
-    "10 per minute", 
-    error_message="Too many clear requests. Please try again later."
-)
-def clear_history():
-    user_id = request.user_id
+@app.delete("/history/clear")
+@limiter.limit("10/minute", error_message="Too many clear requests. Please try again later.")
+async def clear_history(request: Request, user_id: str = Depends(require_auth)):
     try:
         deleted = delete_all_translations(user_id)
+        logger.info(deleted)
+
         if not deleted:
-            return jsonify({
-                "error": "No history found"
-            }), 404
-        return jsonify({
+            raise StarletteHTTPException(
+                status_code = 404, 
+                detail = "No history found"
+            )
+
+        return {
             "message": "History deleted"
-        }), 200
+            }
+            
+    except StarletteHTTPException:
+        raise
+        
     except Exception:
-        logger.exception(
-            "Failed to delete history"
+        logger.exception("Failed to delete history")
+        raise StarletteHTTPException(
+            status_code = 500, 
+            detail = "Failed to delete history"
         )
-        return jsonify({
-            "error": "Failed to delete history"
-        }), 500
 
 
+@app.delete("/history/{translation_id}")
+@limiter.limit("50/minute", error_message="Too many delete history requests. Please try again later.")
+async def delete_history(
+    request: Request,
+    translation_id: str,
+    user_id: str = Depends(require_auth),
+):
+    try:
+        deleted = delete_translation(user_id, translation_id)
 
-#  WebSocket Route
-#  for live translations
-@sock.route("/ws")
-def websocket_translate(ws):
-    handle_websocket(ws, model_api, executor)
+        if not deleted:
+            raise StarletteHTTPException(
+                status_code=404, 
+                detail="Translation not found"
+            )
+
+        return {
+            "message": "Translation deleted"
+            }
+
+    except StarletteHTTPException:
+        raise
+
+    except Exception:
+        logger.exception("Failed to delete history")
+        raise StarletteHTTPException(
+            status_code=500, 
+            detail="Failed to delete history"
+        )
+
+
+# SLT Model routes
+@app.get("/slt-model")
+@limiter.limit("5/minute", error_message="Too many model requests. Please try again later.")
+async def slt_model(request: Request, user_id : str = Depends(require_auth)):
+    try:
+        logger.info("Model API health check")
+        return model_api.deep_health()
+    except Exception:
+        logger.exception("Model API health check failed")
+        raise StarletteHTTPException(status_code=503, detail="Model not ready")
+
+#  WebSocket route 
+@app.websocket("/ws")
+async def websocket_translate(websocket: WebSocket):
+    await handle_websocket(websocket, model_api, executor)
 
 
 #  Entry point 
 if __name__ == "__main__":
+    import uvicorn
+
     port = int(os.environ.get("PORT", 5000))
     print(f"\n{'='*60}")
     print(f"  SignBridge Backend  ->  http://0.0.0.0:{port}/")
     print(f"  WebSocket         ->  ws://0.0.0.0:{port}/ws")
     print(f"  Android emulator  ->  use 10.0.2.2 instead of localhost")
     print(f"{'='*60}\n")
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    uvicorn.run(app, host="0.0.0.0", port=port)

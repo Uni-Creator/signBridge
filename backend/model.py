@@ -16,6 +16,7 @@ class ISLModelAPI:
         self.predict_frames_url  = f"{self.base_url}/predict_frames"
         self.predict_video_url   = f"{self.base_url}/predict"
         self.health_url          = f"{self.base_url}/health"
+        self.deep_health_url     = f"{self.base_url}/health/deep"
         self.top_k               = top_k
 
         # Persistent connection pool — avoids TCP handshake on every request
@@ -34,6 +35,84 @@ class ISLModelAPI:
             return r.status_code == 200 and r.json().get("status") == "ok"
         except Exception:
             return False
+
+    def deep_health(self):
+        try:
+            r = self.session.get(self.deep_health_url, timeout=5)
+
+            if r.status_code == 200:
+                json_response = r.json()
+
+                model = json_response.get("model", {})
+                input_info = json_response.get("input", {})
+                inference = json_response.get("inference", {})
+                gpu = json_response.get("gpu", {})
+                runtime = json_response.get("runtime", {})
+
+                return {
+                    "isl_model_status": "connected",
+
+                    # Model
+                    "model_name": model.get("name"),
+                    "model_loaded": model.get("loaded"),
+                    "model_compiled": model.get("compiled"),
+                    "device": model.get("device"),
+                    "dtype": model.get("dtype"),
+                    "fp16": model.get("fp16"),
+                    "num_classes": model.get("num_classes"),
+
+                    # Model size
+                    "num_parameters": model.get("num_parameters"),
+                    "num_parameters_million": model.get(
+                        "num_parameters_million"
+                    ),
+                    "parameter_memory_mb": model.get(
+                        "parameter_memory_mb"
+                    ),
+                    "parameterized_layers": model.get(
+                        "parameterized_layers"
+                    ),
+                    "total_modules": model.get(
+                        "total_modules"
+                    ),
+
+                    # Input
+                    "input_shape": input_info.get("input_shape"),
+                    "input_tensor_memory_mb": input_info.get(
+                        "input_tensor_memory_mb"
+                    ),
+                    "clip_length": input_info.get("clip_length"),
+                    "resolution": input_info.get("resolution"),
+                    "batch_size": input_info.get("batch_size"),
+
+                    # Inference
+                    "inference_working": inference.get("working"),
+                    "inference_time_ms": inference.get("time_ms"),
+
+                    # Memory
+                    "memory": inference.get("memory"),
+
+                    # GPU
+                    "gpu": gpu,
+
+                    # Runtime
+                    "runtime": runtime,
+                }
+
+            else:
+                return {
+                    "isl_model_status": (
+                        f"Model server not ready "
+                        f"(HTTP {r.status_code})"
+                    )
+                }
+
+        except Exception as e:
+            return {
+                "isl_model_status": (
+                    f"Model server error: {str(e)}"
+                )
+            }
 
     # Frames path (primary real-time path)
     def predict_from_frames(self, frames: list[Image.Image]) -> dict:
