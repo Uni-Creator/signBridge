@@ -1766,7 +1766,7 @@ class ISLModelAPITests(unittest.TestCase):
         api = ISLModelAPI(top_k=1)
         api.session.get = MagicMock(side_effect=ConnectionError("refused"))
         result = api.deep_health()
-        self.assertIn("Model server error", result["isl_model_status"])
+        self.assertIn("Model server unavailable", result["isl_model_status"])
 
     # predict_from_frames - validation
 
