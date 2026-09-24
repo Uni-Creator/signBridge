@@ -17,6 +17,7 @@ Endpoints:
 Migrated from Flask + flask-sock + flask-limiter to FastAPI + native
 ASGI WebSockets + slowapi.
 """
+from datetime import datetime
 import os
 import logging
 import threading
@@ -27,10 +28,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, Request, Header, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Header, Depends
+from fastapi import Cookie, WebSocket, WebSocketException,WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
+from fastapi.exceptions import RequestValidationError, HTTPException
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.concurrency import run_in_threadpool
 
@@ -139,6 +141,7 @@ class StoreTranslationRequest(BaseModel):
 
 
 #  Auth dependency 
+#  Header-based auth dependency (primary)
 async def require_auth(
     request: Request,
     authorization: str = Header(default=""),
@@ -180,6 +183,60 @@ async def require_auth(
 
     request.state.user_id = decoded["uid"]
     return decoded["uid"]
+
+#  Cookie-based auth dependency (legacy support)
+async def require_ws_auth(
+    websocket: WebSocket,
+    authorization: str = Header(default=""),
+) -> str:
+
+    if not authorization.startswith("Bearer "):
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Missing or invalid token",
+        )
+
+    token = authorization.split(" ", 1)[1].strip()
+
+    if not token:
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Missing or invalid token",
+        )
+
+    try:
+        decoded = await run_in_threadpool(
+            admin_auth.verify_id_token,
+            token,
+            check_revoked=True,
+        )
+
+        return decoded["uid"]
+
+    except admin_auth.ExpiredIdTokenError:
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Token expired",
+        )
+
+    except admin_auth.RevokedIdTokenError:
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Token revoked",
+        )
+
+    except admin_auth.InvalidIdTokenError:
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Invalid token",
+        )
+
+    except Exception:
+        logger.exception("WebSocket authentication failed")
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Authentication failed",
+        )
 
 
 #  Error handlers 
@@ -228,15 +285,64 @@ async def ratelimit_handler(request: Request, exc: RateLimitExceeded):
 
 #  REST routes 
 @app.get("/")
-async def index():
+@limiter.limit(
+    "20/minute", 
+    error_message="Too many requests. Please try again later."
+)
+async def index(request: Request):
     return {
         "message": "SignBridge API is running", 
         "version": "2.0"
         }
 
+@app.get("/health")
+@limiter.limit(
+    "10/minute", 
+    error_message="Too many requests. Please try again later."
+)
+async def health(request: Request):
+    return {"status": "ok"}
+
+
+@app.get("/health/deep")
+@limiter.limit(
+    "5/minute", 
+    error_message="Too many requests. Please try again later."
+)
+async def deep_health(request: Request):
+    database_ok = False
+    model_ok = False
+
+    try:
+        admin_auth.collection("users").limit(1).get()
+        database_ok = True
+    except Exception:
+        logger.exception("Database health check failed")
+
+    try:
+        model_result = model_api.check_health()
+        model_ok = True
+    except Exception:
+        logger.exception("Model server health check failed")
+        model_result = None
+
+    result = {
+        "status": "ok" if database_ok and model_ok else "degraded",
+        "database": "ok" if database_ok else "error",
+        "model_server": model_result if model_ok else "error",
+    }
+
+    if not database_ok or not model_ok:
+        raise HTTPException(status_code=503, detail=result)
+
+    return result
+
 
 @app.post("/register")
-@limiter.limit("5/minute", error_message="Too many registration attempts. Please try again later.")
+@limiter.limit(
+    "5/minute", 
+    error_message="Too many registration attempts. Please try again later."
+)
 async def register(request: Request, account: AuthRequest):
     res = register_account(account.email, account.password)
 
@@ -255,7 +361,10 @@ async def register(request: Request, account: AuthRequest):
 
 
 @app.post("/login")
-@limiter.limit("5/minute", error_message="Too many login attempts. Please try again later.")
+@limiter.limit(
+    "5/minute", 
+    error_message="Too many login attempts. Please try again later."
+)
 async def login(request: Request, account: AuthRequest):
     res = login_account(account.email, account.password)
 
@@ -274,7 +383,10 @@ async def login(request: Request, account: AuthRequest):
 
 
 @app.post("/logout")
-@limiter.limit("10/minute", error_message="Too many logout requests. Please try again later.")
+@limiter.limit(
+    "10/minute", 
+    error_message="Too many logout requests. Please try again later."
+)
 async def logout(request: Request, user_id: str = Depends(require_auth)):
 
     try:
@@ -290,7 +402,10 @@ async def logout(request: Request, user_id: str = Depends(require_auth)):
 
 
 @app.post("/forgot-password")
-@limiter.limit("3/minute", error_message="Too many forgot password attempts. Please try again later.")
+@limiter.limit(
+    "3/minute", 
+    error_message="Too many forgot password attempts. Please try again later."
+)
 async def forgot_pwd(request: Request, account: ForgotPasswordRequest):
     forgot_password(account.email)
 
@@ -302,7 +417,10 @@ async def forgot_pwd(request: Request, account: ForgotPasswordRequest):
 
 
 @app.post("/update-password")
-@limiter.limit("3/minute", error_message="Too many password update attempts. Please try again later.")
+@limiter.limit(
+    "3/minute", 
+    error_message="Too many password update attempts. Please try again later."
+)
 async def update_pwd(
     request: Request,
     account: ResetPasswordRequest,
@@ -324,8 +442,14 @@ async def update_pwd(
 
 
 @app.get("/history")
-@limiter.limit("20/minute", error_message="Too many history requests. Please try again later.")
-async def get_history(request: Request, user_id: str = Depends(require_auth)):
+@limiter.limit(
+    "20/minute", 
+    error_message="Too many history requests. Please try again later."
+)
+async def get_history(
+    request: Request, 
+    user_id: str = Depends(require_auth),
+):
     
     try:
         return {
@@ -345,7 +469,10 @@ async def get_history(request: Request, user_id: str = Depends(require_auth)):
 
 
 @app.post("/history/store", status_code=201)
-@limiter.limit("50/minute", error_message="Too many store requests. Please try again later.")
+@limiter.limit(
+    "50/minute", 
+    error_message="Too many store requests. Please try again later."
+)
 async def store_history(
     request: Request,
     data: StoreTranslationRequest,
@@ -364,8 +491,14 @@ async def store_history(
             )
 
 @app.delete("/history/clear")
-@limiter.limit("10/minute", error_message="Too many clear requests. Please try again later.")
-async def clear_history(request: Request, user_id: str = Depends(require_auth)):
+@limiter.limit(
+    "10/minute", 
+    error_message="Too many clear requests. Please try again later."
+)
+async def clear_history(
+    request: Request, 
+    user_id: str = Depends(require_auth),
+):
     try:
         deleted = delete_all_translations(user_id)
         logger.info(deleted)
@@ -392,7 +525,10 @@ async def clear_history(request: Request, user_id: str = Depends(require_auth)):
 
 
 @app.delete("/history/{translation_id}")
-@limiter.limit("50/minute", error_message="Too many delete history requests. Please try again later.")
+@limiter.limit(
+    "50/minute", 
+    error_message="Too many delete history requests. Please try again later."
+)
 async def delete_history(
     request: Request,
     translation_id: str,
@@ -423,20 +559,95 @@ async def delete_history(
 
 
 # SLT Model routes
-@app.get("/slt-model")
-@limiter.limit("5/minute", error_message="Too many model requests. Please try again later.")
-async def slt_model(request: Request, user_id : str = Depends(require_auth)):
+@app.get("/slt/health")
+@limiter.limit(
+    "5/minute",
+    error_message="Too many model requests. Please try again later."
+)
+async def slt_health(
+    request: Request,
+    user_id: str = Depends(require_auth)
+):
+    logger.info("SLT model API health check")
+    health = model_api.check_health()
+    
+    if health:
+        return {
+            "status" : "healthy",
+            "timestamp" : datetime.utcnow().isoformat()
+        }
+
+    raise StarletteHTTPException(
+        status_code=503,
+        detail="Model not ready"
+    )
+
+
+@app.get("/slt/health/deep")
+@limiter.limit(
+    "5/minute",
+    error_message="Too many model requests. Please try again later."
+)
+async def slt_deep_health(
+    request: Request,
+    user_id: str = Depends(require_auth)
+):
     try:
-        logger.info("Model API health check")
+        logger.info("SLT model API health check")
         return model_api.deep_health()
     except Exception:
-        logger.exception("Model API health check failed")
-        raise StarletteHTTPException(status_code=503, detail="Model not ready")
+        logger.exception("SLT model API health check failed")
+        raise StarletteHTTPException(
+            status_code=503,
+            detail="Model not ready"
+        )
 
-#  WebSocket route 
-@app.websocket("/ws")
-async def websocket_translate(websocket: WebSocket):
-    await handle_websocket(websocket, model_api, executor)
+# SLT WebSocket route 
+@app.websocket("/slt/ws")
+async def websocket_translate(
+    websocket: WebSocket,
+    user_id: str = Depends(require_ws_auth),
+):
+    landmark_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    await handle_websocket(
+        websocket, model_api, landmark_executor, inference_executor
+    )
+
+
+# SLP Model routes
+
+@app.get("/slp/health")
+@limiter.limit(
+    "5/minute",
+    error_message="Too many model requests. Please try again later."
+)
+async def slp_health(
+    request: Request,
+    user_id: str = Depends(require_auth),
+):
+    ...
+
+
+@app.get("/slp/health/deep")
+@limiter.limit(
+    "5/minute",
+    error_message="Too many model requests. Please try again later."
+)
+async def slp_deep_health(
+    request: Request,
+    user_id: str = Depends(require_auth),
+):
+    ...
+
+
+# SLP WebSocket route
+@app.websocket("/slp/ws")
+async def websocket_produce(
+    websocket: WebSocket,
+    user_id: str = Depends(require_ws_auth),
+):
+    ...
 
 
 #  Entry point 

@@ -49,9 +49,37 @@ import time
 import cv2
 import numpy as np
 from PIL import Image
+from dataclasses import dataclass
+from io import BytesIO
 
 
 logger = logging.getLogger(__name__)
+
+JPEG_QUALITY = 80
+
+
+@dataclass(slots=True)
+class BufferedFrame:
+    """A 224x224 frame plus its JPEG bytes, encoded once."""
+    image: Image.Image
+    jpeg: bytes
+
+
+def encode_jpeg(image: Image.Image, quality: int = JPEG_QUALITY) -> bytes:
+    buf = BytesIO()
+    try:
+        image.save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+    finally:
+        buf.close()
+
+
+def _as_images(frames: list) -> list:
+    return [f.image if isinstance(f, BufferedFrame) else f for f in frames]
+
+
+def _as_jpegs(frames: list) -> list:
+    return [f.jpeg if isinstance(f, BufferedFrame) else f for f in frames]
 
 
 # Rendering behaviour
@@ -422,25 +450,31 @@ def process_frame(
     pose_detector,
     hand_detector,
     landmarks_enabled: bool,
-) -> Image.Image:
+    resize_dim: int = 224,
+    jpeg_quality: int = JPEG_QUALITY,
+) -> BufferedFrame:
     """
-    Process one incoming frame.
+    Process one incoming frame (runs inside the landmark ThreadPoolExecutor).
 
-    This function is intended to run inside the ThreadPoolExecutor.
+    Draw landmarks at the original
+    resolution, resize, then JPEG-encode once.
     """
-
     try:
-        if landmarks_enabled:
-            return apply_landmarks(
-                raw_image,
-                pose_detector,
-                hand_detector,
-            )
+        image = (
+            apply_landmarks(raw_image, pose_detector, hand_detector)
+            if landmarks_enabled
+            else raw_image
+        )
 
-        return raw_image
+        if image.size != (resize_dim, resize_dim):
+            image = image.resize((resize_dim, resize_dim))
+
+        return BufferedFrame(
+            image=image,
+            jpeg=encode_jpeg(image, jpeg_quality),
+        )
 
     finally:
-        # Release this thread's reference.
         del raw_image
 
 
@@ -543,14 +577,14 @@ def run_inference(
     try:
 
         if save_test_videos:
-            save_test_video(frames)
+            save_test_video(_as_images(frames))
 
         # Frames mode
 
         if mode == "frames":
 
             result = model_api.predict_from_frames(
-                frames
+                _as_jpegs(frames)
             )
 
         # Video mode
@@ -558,7 +592,7 @@ def run_inference(
         elif mode == "video":
 
             result = model_api.predict(
-                frames
+                _as_images(frames)
             )
 
         # Hybrid mode
@@ -566,7 +600,7 @@ def run_inference(
         else:
 
             result = model_api.predict_from_frames(
-                frames
+                _as_jpegs(frames)
             )
 
             if "error" in result:
@@ -577,7 +611,7 @@ def run_inference(
                 )
 
                 result = model_api.predict(
-                    frames
+                    _as_images(frames)  
                 )
 
         result["total_latency_ms"] = round(

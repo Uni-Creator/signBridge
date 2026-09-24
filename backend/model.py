@@ -1,5 +1,4 @@
 import logging
-import base64
 import os
 import time
 from io import BytesIO
@@ -8,19 +7,24 @@ import requests
 from dotenv import load_dotenv
 from PIL import Image
 
+from frame_codec import pack_frames
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+CLIP_LENGTH = 16
+JPEG_QUALITY = 80
+
 
 class ISLModelAPI:
     def __init__(self, top_k: int = 5):
-        self.base_url            = os.getenv("BASE_URL", "127.0.0.1:5000").rstrip("/")
-        self.predict_frames_url  = f"{self.base_url}/predict_frames"
-        self.predict_video_url   = f"{self.base_url}/predict"
-        self.health_url          = f"{self.base_url}/health"
-        self.deep_health_url     = f"{self.base_url}/health/deep"
-        self.top_k               = top_k
+        self.base_url                = os.getenv("BASE_URL", "127.0.0.1:5000").rstrip("/")
+        self.predict_frames_bin_url  = f"{self.base_url}/predict_frames_bin"
+        self.predict_video_url       = f"{self.base_url}/predict"
+        self.health_url              = f"{self.base_url}/health"
+        self.deep_health_url         = f"{self.base_url}/health/deep"
+        self.top_k                   = top_k
 
         # Persistent connection pool — avoids TCP handshake on every request
         self.session = requests.Session()
@@ -117,30 +121,57 @@ class ISLModelAPI:
             }
 
     # Frames path (primary real-time path)
-    def predict_from_frames(self, frames: list[Image.Image]) -> dict:
+    @staticmethod
+    def _to_jpeg(frame) -> bytes:
         """
-        Encode 16 PIL Images as JPEG → base64 and POST to /predict_frames.
-        Frames are already resized to 224×224 by the WebSocket handler,
-        so we skip any extra resize here.
+        Return JPEG bytes for one frame.
+
+        Frames normally arrive pre-encoded (bytes) from the WebSocket
+        pipeline, which encodes each frame once when it enters the sliding
+        buffer. PIL images are still accepted and encoded here.
         """
-        if not frames or len(frames) != 16:
-            return {"error": f"Exactly 16 frames required, got {len(frames) if frames else 0}"}
+        if isinstance(frame, (bytes, bytearray, memoryview)):
+            return bytes(frame)
 
-        encoded = []
-        for frame in frames:
-            buf = BytesIO()
-            # quality=80 is a good tradeoff: ~30% smaller payload vs 85, imperceptible quality loss
-            frame.save(buf, format="JPEG", quality=80)
-            encoded.append(base64.b64encode(buf.getvalue()).decode())
-            buf.close()  # explicitly release BytesIO buffer
+        buf = BytesIO()
+        try:
+            frame.save(buf, format="JPEG", quality=JPEG_QUALITY)
+            return buf.getvalue()
+        finally:
+            buf.close()
 
-        payload  = {"frames": encoded, "top_k": self.top_k}
-        del encoded  # payload holds the only reference now; free the list
+    def predict_from_frames(self, frames: list) -> dict:
+        """
+        Send 16 JPEG frames to /predict_frames_bin as one binary container.
+
+        `frames` is a list of JPEG bytes (preferred) or PIL Images.
+        No base64 and no JSON: see frame_codec.pack_frames.
+        """
+        if not frames or len(frames) != CLIP_LENGTH:
+            return {"error": f"Exactly {CLIP_LENGTH} frames required, got {len(frames) if frames else 0}"}
+
+        try:
+            body = pack_frames([self._to_jpeg(f) for f in frames])
+            logger.info(
+                "[MODEL TX] binary frame batch: %.2f KB (%d bytes), frames=%d",
+                len(body) / 1024,
+                len(body),
+                len(frames),
+            )
+        except Exception as e:
+            return {"error": f"Failed to encode frames: {e}"}
+
         last_err = "Unknown error"
 
         for attempt in range(2):
             try:
-                r = self.session.post(self.predict_frames_url, json=payload, timeout=15)
+                r = self.session.post(
+                    self.predict_frames_bin_url,
+                    params={"top_k": self.top_k},
+                    data=body,
+                    headers={"Content-Type": "application/octet-stream"},
+                    timeout=15,
+                )
                 if r.status_code == 200:
                     return r.json()
                 if r.status_code == 503:
@@ -153,7 +184,7 @@ class ISLModelAPI:
 
         return {"error": last_err}
 
-    # Video path (fallback only) 
+    # Video path (fallback only)
     def predict(self, frames: list[Image.Image]) -> dict:
         """
         Compile PIL frames → in-memory MP4 (no disk I/O) and POST to /predict.
@@ -190,7 +221,6 @@ class ISLModelAPI:
         except Exception as e:
             return {"error": str(e)}
         finally:
-            import os
             if os.environ.get("SAVE_TEST_VIDEOS", "0") != "1":
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
