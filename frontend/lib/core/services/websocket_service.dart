@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/io.dart';
 
 typedef OnTranslationCallback = void Function(
   String label,
@@ -68,7 +69,7 @@ class WebSocketService {
 
       // Firebase ID token stays in the Authorization header. Never put
       // it in the query string (it would end up in server/proxy logs).
-      _channel = WebSocketChannel.connect(
+      _channel = IOWebSocketChannel.connect(
         uri,
         headers: {
           'Authorization': 'Bearer $token',
@@ -159,19 +160,19 @@ class WebSocketService {
     }
   }
 
-  /// Send one frame using whichever transport was last negotiated via
-  /// [sendConfig].
-  ///
-  /// - jpeg_binary: sent as a raw binary WebSocket message (unchanged
-  ///   production path).
-  /// - json_base64: sent as {"type": "frame", "frame": "<base64>"}
-  ///   (debugging/Postman path).
-  /// - h264 / h265: reserved but not implemented anywhere in the
-  ///   pipeline yet. Throws instead of silently sending bytes the
-  ///   server will reject.
-  ///
-  /// Call [sendConfig] once, right after [connect], before calling
-  /// this.
+  // Send one frame using whichever transport was last negotiated via
+  // [sendConfig].
+  //
+  // - jpeg_binary: sent as a raw binary WebSocket message (unchanged
+  //   production path).
+  // - json_base64: sent as {"type": "frame", "frame": "<base64>"}
+  //   (debugging/Postman path).
+  // - h264 / h265: reserved but not implemented anywhere in the
+  //  pipeline yet. Throws instead of silently sending bytes the
+  //   server will reject.
+  //
+  // Call [sendConfig] once, right after [connect], before calling
+  // this.
   void sendFrame(Uint8List jpegBytes) {
     if (!_isConnected || _channel == null) return;
 

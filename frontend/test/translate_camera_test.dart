@@ -14,16 +14,28 @@ import 'package:sign_bridge/features/translate/screens/translate_screen.dart';
 class TestSocket extends WebSocketService {
   bool connected = true;
   final modes = <String>[];
+  final transports = <String>[];
   final frames = <Uint8List>[];
+
   @override
   bool get isConnected => connected;
+
   @override
   Future<void> connect(String token) async =>
       onConnectionChange?.call(connected);
+
   @override
   Future<void> disconnect() async {}
+
   @override
-  void sendConfig(String mode) => modes.add(mode);
+  void sendConfig(
+    String mode, {
+    String transport = WsTransport.jpegBinary,
+  }) {
+    modes.add(mode);
+    transports.add(transport);
+  }
+
   @override
   void sendFrame(Uint8List bytes) => frames.add(bytes);
 }
