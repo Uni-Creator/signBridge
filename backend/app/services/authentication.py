@@ -8,7 +8,7 @@ from pathlib import Path
 
 import requests
 
-from firebase_admin_init import admin_auth  # Initializes Firebase once
+from app.config.firebase_admin_init import admin_auth  # Initializes Firebase once
 
 
 logger = logging.getLogger(__name__)
@@ -16,19 +16,19 @@ logger = logging.getLogger(__name__)
 
 # Firebase configuration
 
-firebase_path = (
-    "/etc/secrets/firebase.json"
-    if os.path.exists("/etc/secrets/firebase.json")
-    else Path(__file__).with_name("firebase.json")
-)
 
-with open(firebase_path) as f:
-    data = json.load(f)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-FIREBASE_API_KEY = data["apiKey"]
-_IDENTITY_URL = data["identityURL"]
+FIREBASE_CONFIG_PATH = PROJECT_ROOT / "firebase.json"
 
-del data, f
+
+with FIREBASE_CONFIG_PATH.open(encoding="utf-8") as f:
+    _firebase_config = json.load(f)
+
+FIREBASE_API_KEY = _firebase_config["apiKey"]
+_IDENTITY_URL = _firebase_config["identityURL"]
+
+del _firebase_config
 
 
 # Firebase Identity Toolkit REST API

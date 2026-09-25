@@ -5,8 +5,9 @@ external services are replaced with mocks while the real FastAPI routes, the
 native ASGI WebSocket handler, the processing helpers and the auth/history
 helpers run.
 
-Run from the repository root: python -m unittest discover -s backend/tests -v
+Run from the repository root: python -m unittest discover -s tests -v
 """
+
 import asyncio
 import base64
 import importlib.util
@@ -33,7 +34,6 @@ import requests as real_requests
 import numpy
 from PIL import Image
 from dotenv import load_dotenv
-
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 from starlette.requests import Request
@@ -44,13 +44,11 @@ from starlette.websockets import WebSocketState
 load_dotenv()
 
 BACKEND = Path(__file__).resolve().parents[1]
-
 AUTH = {"Authorization": "Bearer valid"}
 VALID_PASSWORD = "s3cr3tpw"
 
 
 # Helpers shared across test classes
-
 def _load_module(name, filename, fake_modules=None, env=None, env_remove=(), patches=()):
     """Execute BACKEND/<filename> as a fresh module with the given fakes."""
     spec = importlib.util.spec_from_file_location(name, BACKEND / filename)
@@ -113,7 +111,6 @@ def _make_request(headers=None, client_host="127.0.0.1"):
 
 
 # BackendRouteTests - real FastAPI routes in main.py
-
 class BackendRouteTests(unittest.TestCase):
     def setUp(self):
         self.auth = MagicMock()
@@ -131,16 +128,16 @@ class BackendRouteTests(unittest.TestCase):
 
     def _load_backend(self, env=None):
         modules = {
-            "authentication": self.authentication,
-            "history": self.history,
-            "websocket_handler": self.websocket_handler,
-            "model": self.model,
-            "firebase_admin_init": MagicMock(admin_auth=self.auth),
+            "app.services.authentication": self.authentication,
+            "app.services.history": self.history,
+            "app.websocket.websocket_handler": self.websocket_handler,
+            "app.models.model": self.model,
+            "app.config.firebase_admin_init": MagicMock(admin_auth=self.auth),
         }
         # Keep the developer's .env / shell out of the app under test, and stop
         # the model warm-up thread from really starting.
         module = _load_module(
-            "backend_under_test", "main.py", modules,
+            "backend_under_test", "app/main.py", modules,
             env=env,
             env_remove=() if env and "ALLOWED_ORIGINS" in env else ("ALLOWED_ORIGINS",),
             patches=[patch("dotenv.load_dotenv"), patch("threading.Thread.start")],
@@ -176,7 +173,6 @@ class BackendRouteTests(unittest.TestCase):
             self.assertIn(substring, detail["message"])
 
     # TESTS - app wiring
-
     def test_model_api_created_with_top_1(self):
         self.model.ISLModelAPI.assert_called_once_with(top_k=1)
 
@@ -202,7 +198,6 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(self.module.get_user_id(request), "alice")
 
     # TESTS - REST: index
-
     def test_index_returns_api_running_message(self):
         """GET / returns a JSON status message with version 2.0."""
         response = self.client.get("/")
@@ -212,7 +207,6 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(body["version"], "2.0")
 
     # TESTS - REST: /register
-
     def test_register_success(self):
         """POST /register with valid credentials returns id and token."""
         self.authentication.register_account.return_value = {"id": "uid1", "token": "tok1"}
@@ -280,7 +274,6 @@ class BackendRouteTests(unittest.TestCase):
         )
 
     # TESTS - REST: /login
-
     def test_login_success(self):
         """POST /login with valid credentials returns id and token."""
         self.authentication.login_account.return_value = {"id": "uid2", "token": "tok2"}
@@ -332,7 +325,6 @@ class BackendRouteTests(unittest.TestCase):
         )
 
     # TESTS - REST: /forgot-password
-
     def test_forgot_password_success(self):
         response = self.client.post("/forgot-password", json={"email": "a@b.com"})
         self.assertEqual(response.status_code, 200)
@@ -377,7 +369,6 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(statuses, [200] * 3 + [429])
 
     # TESTS - REST: /logout
-
     def test_logout_success(self):
         response = self.client.post("/logout", headers=AUTH)
         self.assertEqual(response.status_code, 200)
@@ -401,7 +392,6 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(statuses, [200] * 10 + [429])
 
     # TESTS - REST: /update-password
-
     def test_update_password_success(self):
         self.authentication.update_password.return_value = True
         response = self.client.post(
@@ -446,7 +436,6 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(statuses, [200] * 3 + [429])
 
     # TESTS - REST: /slt
-
     def test_slt_model_returns_deep_health(self):
         self.model.ISLModelAPI.return_value.deep_health.return_value = {
             "isl_model_status": "connected"
@@ -472,7 +461,6 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(statuses, [200] * 5 + [429])
 
     # TESTS - REST: authentication on protected routes
-
     def test_protected_routes_reject_missing_token(self):
         routes = [
             ("get", "/history"),
@@ -535,7 +523,6 @@ class BackendRouteTests(unittest.TestCase):
         self.auth.verify_id_token.assert_called_once_with("abc.def.ghi", check_revoked=True)
 
     # TESTS - REST: GET /history
-
     def test_history_uses_token_owner_even_with_another_id(self):
         response = self.client.get("/history?id=bob", headers=AUTH)
         self.assertEqual(response.status_code, 200)
@@ -586,7 +573,6 @@ class BackendRouteTests(unittest.TestCase):
         self.history.store_translation.assert_not_called()
 
     # TESTS - REST: POST /history/store
-
     def test_history_store_returns_created_item_for_token_owner(self):
         item = {"id": "-N1", "translation": "hello", "timestamp": "2025-01-01T00:00:00"}
         self.history.store_translation.return_value = item
@@ -654,7 +640,6 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(response.json(), {"error": "Failed to store history"})
 
     # TESTS - REST: DELETE /history/<id> and /history/clear
-
     def test_history_delete_success_scoped_to_token_owner(self):
         self.history.delete_translation.return_value = True
         response = self.client.delete("/history/-N1", headers=AUTH)
@@ -698,14 +683,12 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(response.json(), {"error": "Failed to delete history"})
 
     # TESTS - WebSocket route wiring (behaviour lives in WebSocketHandlerTests)
-
     def test_ws_route_is_registered(self):
         ws_routes = [
             r
             for r in self.module.app.router.routes
             if isinstance(r, WebSocketRoute)
         ]
-
         self.assertEqual(
             [r.path for r in ws_routes],
             ["/slt/ws", "/slp/ws"],

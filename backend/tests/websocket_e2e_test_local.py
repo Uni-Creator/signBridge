@@ -1,23 +1,15 @@
 import argparse
-
 import asyncio
-
 import base64
-
 import json
-
 import os
-
 from pathlib import Path
-
 import websockets
-
 from dotenv import load_dotenv
 
 
 
 load_dotenv()
-
 
 
 # Configuration
@@ -67,11 +59,8 @@ TRANSPORT_H265,
 # Only these can actually carry frames today.
 
 IMPLEMENTED_TRANSPORTS = (
-
-TRANSPORT_JPEG_BINARY,
-
-TRANSPORT_JSON_BASE64,
-
+    TRANSPORT_JPEG_BINARY,
+    TRANSPORT_JSON_BASE64,
 )
 
 
@@ -81,15 +70,10 @@ TRANSPORT_JSON_BASE64,
 async def test_websocket(
 
     ws_url: str,
-
     frames_dir: str,
-
     frame_pattern: str,
-
     transport: str,
-
     fps: float = 12.5,
-
 ):
 
     frames_path = Path(frames_dir)
@@ -513,6 +497,7 @@ async def test_websocket(
                 )
 
 
+
             if config_error.is_set():
 
                 print(
@@ -530,6 +515,7 @@ async def test_websocket(
                     f"{config_ack_payload.get('error')}"
 
                 )
+
 
 
             print(f"[OK] Transport negotiated: {transport}")
@@ -586,7 +572,7 @@ async def test_websocket(
 
                     elif transport == TRANSPORT_JSON_BASE64:
 
-                        # {"type": "frame", "frame": "<base64 JPEG>"}
+                        # {"type": "frame", "frame": "\<base64 JPEG>"}
 
                         await websocket.send(
 
@@ -896,21 +882,23 @@ but the server did not return a model prediction.
 
 Check the backend terminal for:
 
-    - model_api.check_health()
+    \- model_api.check_health()
 
-    - frame decoding errors
+    \- frame decoding errors
 
-    - landmark processing errors
+    \- landmark processing errors
 
-    - model inference errors
+    \- model inference errors
 
-    - Hugging Face/API errors
+    \- Hugging Face/API errors
 
-    - executor/inference exceptions
+    \- executor/inference exceptions
 
 """
 
         )
+
+
 
 
 
@@ -950,7 +938,7 @@ def main():
 
             "Directory containing JPEG frames. "
 
-            "Default: temp/frames"
+            "Default: <repository>/temp/frames"
 
         ),
 
@@ -1035,6 +1023,8 @@ def main():
         )
 
     )
+
+
 
 
 

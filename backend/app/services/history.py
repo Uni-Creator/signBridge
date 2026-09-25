@@ -1,4 +1,4 @@
-import firebase_admin_init  # noqa: F401
+import app.config.firebase_admin_init  # noqa: F401
 from firebase_admin import db
 from datetime import datetime
 

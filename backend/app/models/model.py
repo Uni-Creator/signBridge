@@ -7,7 +7,7 @@ import requests
 from dotenv import load_dotenv
 from PIL import Image
 
-from frame_codec import pack_frames
+from app.websocket.frame_codec import pack_frames
 
 load_dotenv()
 

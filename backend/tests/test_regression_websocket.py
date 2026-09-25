@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, sentinel
 from PIL import Image
 from starlette.websockets import WebSocketState
 
-import websocket_handler as wh
+import app.websocket.websocket_handler as wh
 
 
 # Shared module loader for websocket_processing.py regression tests.
@@ -875,12 +875,12 @@ class WebSocketHandlerTests(_HandlerTestCase):
         hand.close.assert_called_once()
 
 
-# WebSocketProcessingTests - websocket_processing.py (unchanged, still sync)
+# WebSocketProcessingTests - app/websocket/websocket_processing.py (unchanged, still sync)
 
 class WebSocketProcessingTests(unittest.TestCase):
     def setUp(self):
         self.proc = _load_module(
-            "websocket_processing_under_test", "websocket_processing.py",
+            "websocket_processing_under_test", "app/websocket/websocket_processing.py",
             env={"ENABLE_MEDIAPIPE": "0"},
         )
 
@@ -904,7 +904,7 @@ class WebSocketProcessingTests(unittest.TestCase):
     def test_mediapipe_import_failure_disables_landmarks(self):
         with self.assertLogs("websocket_processing_no_mp", "WARNING"):
             proc = _load_module(
-                "websocket_processing_no_mp", "websocket_processing.py",
+                "websocket_processing_no_mp", "app/websocket/websocket_processing.py",
                 fake_modules={"mediapipe": None},  # makes `import mediapipe` fail
                 env={"ENABLE_MEDIAPIPE": "1"},
             )
@@ -938,7 +938,7 @@ class WebSocketProcessingTests(unittest.TestCase):
 
         proc = _load_module(
             "websocket_processing_with_mp",
-            "websocket_processing.py",
+            "app/websocket/websocket_processing.py",
             fake_modules={
                 "mediapipe": mp,
                 "mediapipe.tasks": tasks,

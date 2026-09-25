@@ -12,9 +12,10 @@ Responsibilities:
 - Frame-rate limiting
 - Frame decoding
 - Live sliding-window frame buffering
-- Background MediaPipe processing
+- Background MediaPipe processing (queued, non-dropping)
 - Parallel overlapping inference
-- Ordered inference-result delivery
+- Event-driven, ordered inference-result delivery (not tied to the
+  next incoming packet)
 - Cleanup
 """
 
@@ -29,7 +30,7 @@ from io import BytesIO
 
 from PIL import Image, UnidentifiedImageError
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
-from websocket_processing import (
+from app.websocket.websocket_processing import (
     MEDIAPIPE_OK,
     build_landmarkers,
     process_frame,
@@ -84,9 +85,17 @@ CLIP_LENGTH = 16
 #   overlap = 16 - 6 = 10 frames
 CLIP_STRIDE = 6
 
-# Maximum number of inference jobs allowed to run at the same time.
+# Per-connection soft cap on how many inference jobs ONE user may have
+# in flight at the same time.
 #
-# Start with 2. Increase only after benchmarking the model server.
+# IMPORTANT: this is no longer the server's global concurrency limit.
+# The true global limit is how many worker threads the *shared*
+# inference_executor passed in from main.py has (see
+# MAX_INFERENCE_WORKERS there). This per-connection value only stops a
+# single busy/misbehaving connection from monopolizing that shared
+# pool - e.g. with a 2-worker shared pool and this set to 2, one user
+# could otherwise queue unlimited windows and starve everyone else.
+# Keep this <= the shared pool's worker count.
 MAX_CONCURRENT_INFERENCES = 2
 
 # Approximately 12.5 incoming frames/sec.
@@ -99,6 +108,14 @@ SAVE_TEST_VIDEOS = False
 # How long to wait for a client message before treating the connection
 # as idle.
 RECEIVE_TIMEOUT = 30.0
+
+# Upper bound on how many decoded-but-not-yet-landmarked frames we'll
+# hold onto if MediaPipe falls behind the incoming frame rate. This
+# turns "processing is slower than the camera" into bounded latency
+# (oldest waiting frame gets dropped, with a log) instead of unbounded
+# memory growth. It should never be hit at the intended ~12.5 fps
+# input rate with a healthy landmark pipeline.
+MAX_PENDING_LANDMARK_FRAMES = 8
 
 
 # Input validation limits.
@@ -672,9 +689,23 @@ async def handle_websocket(
     model_api,
     landmark_executor: concurrent.futures.ThreadPoolExecutor,
     inference_executor: concurrent.futures.ThreadPoolExecutor,
+    user_id: str = "anonymous",
 ):
     """
     Main WebSocket connection controller.
+
+    `landmark_executor` and `inference_executor` are APPLICATION-LEVEL
+    shared thread pools, created once in main.py's lifespan and passed
+    into every call of this function. They must NOT be created here or
+    per-connection - doing so is what let resource usage multiply with
+    every connected user (N users x their own 4+4 threads instead of
+    N users sharing one 4+2 pool). This function only owns
+    connection-local state (buffers, sequence numbers, this user's
+    MediaPipe detector instances, etc).
+
+    `user_id` is the authenticated Firebase uid for this connection
+    (see require_ws_auth in main.py); it is used only for log
+    correlation here.
 
     Sliding-window behavior:
 
@@ -699,12 +730,42 @@ async def handle_websocket(
             ↓
         inference #2
 
-    Multiple inference jobs may execute concurrently (bounded by
-    MAX_CONCURRENT_INFERENCES), on a dedicated inference_executor so a
-    busy inference pool never blocks MediaPipe landmark processing.
+    Multiple inference jobs may execute concurrently. The GLOBAL cap on
+    how many run at once across ALL connections is the worker count of
+    the shared `inference_executor` (set in main.py). MAX_CONCURRENT_INFERENCES
+    below is only a per-connection soft cap layered on top of that, so a
+    single connection can't queue unlimited windows and starve other
+    users of the shared pool.
 
     Results are always sent in sequence order even if later inference
     jobs finish before earlier ones.
+
+    Two things that used to silently misbehave are fixed here:
+
+    1. RESULT DELIVERY WAS TIED TO THE RECEIVE LOOP.
+       Previously, completed inference results were only collected and
+       flushed at the top of the main loop, which only runs again once
+       `ws.receive()` returns. A prediction that finished while the
+       loop was blocked waiting for the client's next message sat
+       unsent until that next message arrived - i.e. results always
+       appeared "one packet late". Fixed by attaching a done-callback
+       to every inference future that sets an asyncio.Event, and a
+       background task that flushes results the instant that event
+       fires, independent of whether a new frame has arrived.
+
+    2. FRAMES WERE DROPPED, NOT QUEUED, WHEN MEDIAPIPE WAS BUSY.
+       Previously only one landmark job was ever in flight; if a new
+       frame arrived before the current job finished, the code
+       skipped submitting it and immediately `del`eted the decoded
+       image - the frame was gone, not delayed. Since MediaPipe
+       pose+hand inference can easily take longer than the ~80ms
+       frame interval, this happened routinely (most visibly as "the
+       first frame never seems to register" - frame N's job is still
+       running when frame N+1 arrives, so N+1 is silently discarded).
+       Fixed with a small FIFO queue: incoming frames wait their turn
+       instead of being discarded, bounded by
+       MAX_PENDING_LANDMARK_FRAMES so a sustained slowdown produces
+       bounded, logged frame loss instead of unbounded memory growth.
     """
 
     loop = asyncio.get_running_loop()
@@ -712,7 +773,8 @@ async def handle_websocket(
     await ws.accept()
 
     logger.info(
-        "WebSocket client connected",
+        "WebSocket client connected user_id=%s",
+        user_id,
     )
 
     await send_json(
@@ -770,6 +832,17 @@ async def handle_websocket(
     last_receive_time = 0.0
     frame_count = 0
 
+    # Landmark pipeline state
+    #
+    # landmark_future: the single in-flight MediaPipe job (kept to 1 at
+    # a time to preserve ordering and bound CPU usage).
+    #
+    # pending_raw_frames: raw decoded frames waiting for their turn.
+    # Frames are queued here instead of being dropped when MediaPipe
+    # is still busy with a previous frame.
+    landmark_future = None
+    pending_raw_frames = deque()
+
     # Inference state
 
     # Native concurrent.futures.Future objects.
@@ -790,11 +863,25 @@ async def handle_websocket(
     # Next inference sequence that the client expects.
     next_result_sequence = 0
 
-    # Landmark state
+    # Set (from any thread, via call_soon_threadsafe) whenever an
+    # inference future completes. A background task below wakes up on
+    # this event and flushes results immediately, so delivery is no
+    # longer tied to the cadence of incoming client messages.
+    new_result_event = asyncio.Event()
 
-    landmark_future = None
+    # Guards collect_completed_inferences()/flush_results_in_order()
+    # so the background pump task and the main receive loop never run
+    # that section concurrently.
+    results_lock = asyncio.Lock()
 
     # MediaPipe detectors
+    #
+    # These are created fresh PER CONNECTION (intentionally - they hold
+    # per-stream state and are not safe to share across users). They
+    # are handed off to the SHARED landmark_executor as plain
+    # arguments to process_frame(), so multiple connections' detector
+    # instances can be worked on concurrently by different threads in
+    # that shared pool without stepping on each other.
 
     pose_detector, hand_detector = build_landmarkers()
 
@@ -833,35 +920,71 @@ async def handle_websocket(
             "Remote model API healthy."
         )
 
-    # Helper: collect completed MediaPipe job
+    # Helper: collect completed MediaPipe job, then start the next
+    # queued one if any are waiting.
 
     def collect_landmark_result():
         nonlocal landmark_future
 
         if (
-            landmark_future is None
-            or not landmark_future.done()
+            landmark_future is not None
+            and landmark_future.done()
         ):
-            return
+            try:
+                # process_frame() already resized + JPEG-encoded the frame
+                # inside the landmark worker thread (BufferedFrame).
+                frame_buffer.append(landmark_future.result())
 
-        try:
-            # process_frame() already resized + JPEG-encoded the frame
-            # inside the landmark worker thread (BufferedFrame).
-            frame_buffer.append(landmark_future.result())
+                logger.debug(
+                    "Landmark job collected. "
+                    "Buffered frames: %d",
+                    len(frame_buffer),
+                )
 
-            logger.debug(
-                "Landmark job collected. "
-                "Buffered frames: %d",
-                len(frame_buffer),
+            except Exception:
+                logger.exception(
+                    "Landmark processing failed."
+                )
+
+            finally:
+                landmark_future = None
+
+        # Start the next queued frame's landmark job, if the pipeline
+        # is free and something is waiting. This is what replaces the
+        # old "drop the frame if busy" behavior: frames wait in
+        # pending_raw_frames instead of being discarded.
+        if landmark_future is None and pending_raw_frames:
+            next_raw = pending_raw_frames.popleft()
+
+            landmark_future = landmark_executor.submit(
+                process_frame,
+                next_raw,
+                pose_detector,
+                hand_detector,
+                landmarks_enabled,
+                RESIZE_DIM,
             )
 
-        except Exception:
-            logger.exception(
-                "Landmark processing failed."
-            )
+    def enqueue_raw_frame(raw_image):
+        """
+        Queue a newly decoded frame for landmark processing.
 
-        finally:
-            landmark_future = None
+        Frames are never silently dropped here. If the pending queue
+        is already at its cap (MediaPipe has fallen behind), the
+        OLDEST waiting frame is dropped instead, with a warning log,
+        which bounds memory/latency growth while still processing the
+        most recent frames.
+        """
+
+        if len(pending_raw_frames) >= MAX_PENDING_LANDMARK_FRAMES:
+            logger.warning(
+                "Landmark queue full (%d pending); "
+                "dropping oldest queued frame.",
+                len(pending_raw_frames),
+            )
+            pending_raw_frames.popleft()
+
+        pending_raw_frames.append(raw_image)
 
     # Helper: submit one sliding inference window
 
@@ -924,11 +1047,19 @@ async def handle_websocket(
 
         inference_futures[sequence] = future
 
+        # Wake the result-pump task the instant this future completes,
+        # from whichever executor thread finishes it - instead of
+        # waiting for the client to send another packet.
+        future.add_done_callback(
+            lambda _f: loop.call_soon_threadsafe(new_result_event.set)
+        )
+
         logger.info(
-            "Submitted inference #%d "
+            "user_id=%s submitted inference #%d "
             "window=%d frames "
             "remaining_buffer=%d "
-            "in_flight=%d",
+            "in_flight(this_conn)=%d",
+            user_id,
             sequence,
             len(frames_copy),
             len(frame_buffer),
@@ -1048,6 +1179,34 @@ async def handle_websocket(
 
             next_result_sequence += 1
 
+    async def collect_and_flush():
+        """Serialized collect + flush, safe to call from either the
+        main receive loop or the background result-pump task."""
+
+        async with results_lock:
+            collect_completed_inferences()
+            await flush_results_in_order()
+
+    # Background task: push results the instant they're ready.
+    #
+    # This is the fix for "results only arrive when a new packet is
+    # sent". Previously collect_completed_inferences()/
+    # flush_results_in_order() only ran when the main loop woke up
+    # from ws.receive(), i.e. only when the client sent something.
+    # This task instead wakes up as soon as any inference future
+    # completes (via the done-callback in submit_inference_window)
+    # and flushes immediately, independent of client traffic.
+    async def result_pump():
+        try:
+            while True:
+                await new_result_event.wait()
+                new_result_event.clear()
+                await collect_and_flush()
+        except asyncio.CancelledError:
+            pass
+
+    pump_task = asyncio.create_task(result_pump())
+
     # Helper: wait for all inference jobs
 
     async def drain_inferences():
@@ -1061,22 +1220,20 @@ async def handle_websocket(
             # Wait until at least one future completes.
             await asyncio.sleep(0.005)
 
-            collect_completed_inferences()
-
-            await flush_results_in_order()
+            await collect_and_flush()
 
     # Connection loop
 
     try:
         while True:
 
-            # Collect inference jobs that completed since the last iteration.
-            #
-            # This is non-blocking.
-
-            collect_completed_inferences()
-
-            await flush_results_in_order()
+            # Collect/flush anything that finished since the last
+            # iteration. The result_pump task above also does this
+            # continuously, so this call mainly catches anything that
+            # completed in the brief window before the pump task was
+            # scheduled - it's a safety net, not the primary delivery
+            # path anymore.
+            await collect_and_flush()
 
             # Receive next WebSocket message.
 
@@ -1175,23 +1332,24 @@ async def handle_websocket(
                     frame_count,
                 )
 
-                # Finish the last MediaPipe job.
+                # Finish every remaining queued/in-flight MediaPipe job.
 
-                if landmark_future is not None:
-                    try:
-                        frame_buffer.append(
-                            await asyncio.wrap_future(
-                                landmark_future
+                while pending_raw_frames or landmark_future is not None:
+                    if landmark_future is not None:
+                        try:
+                            frame_buffer.append(
+                                await asyncio.wrap_future(
+                                    landmark_future
+                                )
                             )
-                        )
+                        except Exception:
+                            logger.exception(
+                                "Final landmark processing failed."
+                            )
+                        finally:
+                            landmark_future = None
 
-                    except Exception:
-                        logger.exception(
-                            "Final landmark processing failed."
-                        )
-
-                    finally:
-                        landmark_future = None
+                    collect_landmark_result()
 
                 # Submit any remaining complete sliding windows.
                 #
@@ -1286,32 +1444,30 @@ async def handle_websocket(
 
             frame_count += 1
 
-            # Collect completed MediaPipe job.
+            # Collect any completed MediaPipe job, and kick off the
+            # next queued one.
 
             collect_landmark_result()
 
-            # Submit MediaPipe processing on its own dedicated executor.
-            #
-            # Keep one landmark job in flight so frame order remains stable.
+            # Queue this frame for landmark processing. It is no
+            # longer dropped if a previous job is still running - see
+            # enqueue_raw_frame()/collect_landmark_result() above.
 
-            if landmark_future is None:
-                landmark_future = landmark_executor.submit(
-                    process_frame,
-                    raw_image,
-                    pose_detector,
-                    hand_detector,
-                    landmarks_enabled,
-                    RESIZE_DIM,
-                )
+            enqueue_raw_frame(raw_image)
 
-            del raw_image
+            # collect_landmark_result() only starts a new job when the
+            # pipeline is free; call it again in case it was free right
+            # now (the job it just collected is None) and this frame
+            # can start immediately instead of waiting for the next
+            # decoded frame to trigger it.
+            collect_landmark_result()
 
-            # Collect any inference that completed while this frame was
-            # being processed.
+            # Collect/flush any inference that completed while this
+            # frame was being processed (result_pump also does this
+            # continuously; this is a low-cost extra chance to flush
+            # promptly).
 
-            collect_completed_inferences()
-
-            await flush_results_in_order()
+            await collect_and_flush()
 
             # IMPORTANT:
             #
@@ -1326,9 +1482,14 @@ async def handle_websocket(
             ):
                 # Backpressure.
                 #
-                # Do not allow unlimited inference jobs to accumulate.
-                # Once MAX_CONCURRENT_INFERENCES are running, wait for one
-                # to complete before creating another window.
+                # Do not allow unlimited inference jobs to accumulate
+                # for THIS connection. Once MAX_CONCURRENT_INFERENCES
+                # windows from this connection are in flight, wait for
+                # one to complete before creating another window. This
+                # is a per-connection throttle layered on top of the
+                # shared inference_executor's own (global) worker-count
+                # limit - it exists so one connection can't queue
+                # unbounded work into the shared pool.
 
                 if (
                     len(inference_futures)
@@ -1361,6 +1522,19 @@ async def handle_websocket(
         )
 
     finally:
+        # Stop the background result-pump task.
+
+        pump_task.cancel()
+
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(
+                "Result-pump task raised during shutdown."
+            )
+
         # Cancel outstanding inference jobs
 
         for sequence, future in list(
@@ -1377,7 +1551,9 @@ async def handle_websocket(
         inference_futures.clear()
         pending_results.clear()
 
-        # Cancel / finish MediaPipe job
+        # Cancel / finish MediaPipe job, and drop anything still queued.
+
+        pending_raw_frames.clear()
 
         if landmark_future is not None:
 
@@ -1398,6 +1574,11 @@ async def handle_websocket(
                     )
 
         # Close MediaPipe detectors
+        #
+        # Safe to close here even though the shared landmark_executor
+        # may still have other connections' jobs in flight, because
+        # these detector instances belong ONLY to this connection -
+        # they were never shared with other users.
 
         if pose_detector:
             try:
@@ -1429,5 +1610,6 @@ async def handle_websocket(
                 pass
 
         logger.info(
-            "WebSocket client disconnected",
+            "WebSocket client disconnected user_id=%s",
+            user_id,
         )

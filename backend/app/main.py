@@ -44,11 +44,11 @@ from slowapi.util import get_remote_address
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 
 #  App setup 
-from authentication import register_account, login_account, logout_user, forgot_password, update_password
-from history import retrieve_history, store_translation, delete_translation, delete_all_translations
-from websocket_handler import handle_websocket
-from model import ISLModelAPI
-from firebase_admin_init import admin_auth
+from app.services.authentication import register_account, login_account, logout_user, forgot_password, update_password
+from app.services.history import retrieve_history, store_translation, delete_translation, delete_all_translations
+from app.websocket.websocket_handler import handle_websocket
+from app.models.model import ISLModelAPI
+from app.config.firebase_admin_init import admin_auth
 
 
 logging.basicConfig(
@@ -65,6 +65,37 @@ FRAME_DELAY = 0.08
 RESIZE_DIM = 224
 
 _SAVE_TEST_VIDEOS = os.environ.get("SAVE_TEST_VIDEOS", "0") == "1"
+
+# ---------------------------------------------------------------------------
+# Shared, application-level executors for the /slt/ws pipeline.
+#
+# These are created ONCE, here, at import time - not per WebSocket
+# connection. Every connected user's handle_websocket() call is handed
+# the SAME pool. This is what makes compute resources shared while
+# connections stay per-user:
+#
+#   connections : unbounded (one asyncio task each, cheap)
+#   MediaPipe workers : SLT_LANDMARK_WORKERS total, shared by everyone
+#   inference workers : SLT_INFERENCE_WORKERS total, shared by everyone
+#     (this is also the server's GLOBAL inference concurrency limit -
+#     see the MAX_CONCURRENT_INFERENCES note in websocket_handler.py)
+#
+# Tune via env vars; start conservative and benchmark the model server
+# before raising SLT_INFERENCE_WORKERS - the remote ISL model API is
+# likely to bottleneck before this pool does.
+# ---------------------------------------------------------------------------
+SLT_LANDMARK_WORKERS = int(os.environ.get("SLT_LANDMARK_WORKERS", "4"))
+SLT_INFERENCE_WORKERS = int(os.environ.get("SLT_INFERENCE_WORKERS", "2"))
+
+slt_landmark_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=SLT_LANDMARK_WORKERS,
+    thread_name_prefix="slt-landmark",
+)
+
+slt_inference_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=SLT_INFERENCE_WORKERS,
+    thread_name_prefix="slt-inference",
+)
 
 
 #  Rate limiting 
@@ -94,6 +125,10 @@ async def lifespan(app: FastAPI):
         ).start()
     yield
     executor.shutdown(wait=False)
+    # Stop accepting new work in the shared SLT pools and let
+    # in-flight jobs finish without blocking shutdown.
+    slt_landmark_executor.shutdown(wait=False)
+    slt_inference_executor.shutdown(wait=False)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -608,10 +643,16 @@ async def websocket_translate(
     websocket: WebSocket,
     user_id: str = Depends(require_ws_auth),
 ):
-    landmark_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-    inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    # IMPORTANT: do NOT create ThreadPoolExecutors here. That was the
+    # bug - it gave every connection its own 4+4 threads, so resource
+    # usage multiplied with every user instead of being shared. Pass
+    # the module-level, application-wide pools created once above.
     await handle_websocket(
-        websocket, model_api, landmark_executor, inference_executor
+        websocket,
+        model_api,
+        slt_landmark_executor,
+        slt_inference_executor,
+        user_id=user_id,
     )
 
 
