@@ -50,12 +50,22 @@ jobs:
             > server.log 2>&1 &
 
           echo $! > server.pid
+          sleep 3
+
+          echo "=== Backend startup log ==="
+          cat server.log
+
+          if ! kill -0 "$(cat server.pid)" 2>/dev/null; then
+            echo "Backend process exited during startup"
+            exit 1
+          fi
 
       - name: Wait for backend
         working-directory: backend
         run: |
           for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:5000/health > /dev/null; then
+            if curl -fsS http://127.0.0.1:5000/health; then
+              echo
               echo "Backend is ready"
               exit 0
             fi
@@ -64,7 +74,8 @@ jobs:
             sleep 2
           done
 
-          echo "Backend failed to start"
+          echo "Backend failed to become ready"
+          echo "=== Backend log ==="
           cat server.log
           exit 1
 
