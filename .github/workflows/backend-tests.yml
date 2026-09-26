@@ -41,8 +41,52 @@ jobs:
         working-directory: backend
         run: uv run python -m unittest discover -s tests/regression -v
 
-      - name: Run live tests  
+      - name: Start backend server
         working-directory: backend
-        run: uv run python -m unittest discover -s tests/live -v
+        run: |
+          uv run uvicorn app.main:app \
+            --host 127.0.0.1 \
+            --port 5000 \
+            > server.log 2>&1 &
+
+          echo $! > server.pid
+
+      - name: Wait for backend
+        working-directory: backend
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:5000/health > /dev/null; then
+              echo "Backend is ready"
+              exit 0
+            fi
+
+            echo "Waiting for backend..."
+            sleep 2
+          done
+
+          echo "Backend failed to start"
+          cat server.log
+          exit 1
+
+      - name: Run live tests
+        working-directory: backend
         env:
-          SIGNBRIDGE_RUN_LIVE_TESTS: 1
+          SIGNBRIDGE_RUN_LIVE_TESTS: "1"
+        run: |
+          uv run python -m unittest discover -s tests/live -v
+
+      - name: Show backend logs
+        if: always()
+        working-directory: backend
+        run: |
+          if [ -f server.log ]; then
+            cat server.log
+          fi
+
+      - name: Stop backend server
+        if: always()
+        working-directory: backend
+        run: |
+          if [ -f server.pid ]; then
+            kill "$(cat server.pid)" || true
+          fi
