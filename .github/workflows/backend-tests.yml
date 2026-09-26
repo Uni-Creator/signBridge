@@ -41,6 +41,15 @@ jobs:
         working-directory: backend
         run: uv run python -m unittest discover -s tests/regression -v
 
+      - name: Create Firebase configuration
+        working-directory: backend
+        env:
+          FIREBASE_JSON: ${{ secrets.FIREBASE_JSON }}
+          FIREBASE_ADMIN_JSON: ${{ secrets.FIREBASE_ADMIN_JSON }}
+        run: |
+          printf '%s' "$FIREBASE_JSON" > firebase.json
+          printf '%s' "$FIREBASE_ADMIN_JSON" > firebase-admin.json
+
       - name: Start backend server
         working-directory: backend
         run: |
