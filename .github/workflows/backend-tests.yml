@@ -25,7 +25,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -37,6 +37,12 @@ jobs:
         working-directory: backend
         run: uv sync --frozen
 
-      - name: Run backend tests
+      - name: Run regression tests
         working-directory: backend
-        run: uv run python -m unittest discover -s tests -v
+        run: uv run python -m unittest discover -s tests/regression -v
+
+      - name: Run live tests  
+        working-directory: backend
+        run: uv run python -m unittest discover -s tests/live -v
+        env:
+          SIGNBRIDGE_RUN_LIVE_TESTS: 1

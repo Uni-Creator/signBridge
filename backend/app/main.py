@@ -66,7 +66,6 @@ RESIZE_DIM = 224
 
 _SAVE_TEST_VIDEOS = os.environ.get("SAVE_TEST_VIDEOS", "0") == "1"
 
-# ---------------------------------------------------------------------------
 # Shared, application-level executors for the /slt/ws pipeline.
 #
 # These are created ONCE, here, at import time - not per WebSocket
@@ -83,7 +82,7 @@ _SAVE_TEST_VIDEOS = os.environ.get("SAVE_TEST_VIDEOS", "0") == "1"
 # Tune via env vars; start conservative and benchmark the model server
 # before raising SLT_INFERENCE_WORKERS - the remote ISL model API is
 # likely to bottleneck before this pool does.
-# ---------------------------------------------------------------------------
+
 SLT_LANDMARK_WORKERS = int(os.environ.get("SLT_LANDMARK_WORKERS", "4"))
 SLT_INFERENCE_WORKERS = int(os.environ.get("SLT_INFERENCE_WORKERS", "2"))
 
@@ -375,7 +374,7 @@ async def deep_health(request: Request):
 
 @app.post("/register")
 @limiter.limit(
-    "5/minute", 
+    "10/minute", 
     error_message="Too many registration attempts. Please try again later."
 )
 async def register(request: Request, account: AuthRequest):
@@ -397,7 +396,7 @@ async def register(request: Request, account: AuthRequest):
 
 @app.post("/login")
 @limiter.limit(
-    "5/minute", 
+    "10/minute", 
     error_message="Too many login attempts. Please try again later."
 )
 async def login(request: Request, account: AuthRequest):
@@ -438,7 +437,7 @@ async def logout(request: Request, user_id: str = Depends(require_auth)):
 
 @app.post("/forgot-password")
 @limiter.limit(
-    "3/minute", 
+    "5/minute", 
     error_message="Too many forgot password attempts. Please try again later."
 )
 async def forgot_pwd(request: Request, account: ForgotPasswordRequest):
@@ -453,7 +452,7 @@ async def forgot_pwd(request: Request, account: ForgotPasswordRequest):
 
 @app.post("/update-password")
 @limiter.limit(
-    "3/minute", 
+    "5/minute", 
     error_message="Too many password update attempts. Please try again later."
 )
 async def update_pwd(
@@ -561,7 +560,7 @@ async def clear_history(
 
 @app.delete("/history/{translation_id}")
 @limiter.limit(
-    "50/minute", 
+    "60/minute", 
     error_message="Too many delete history requests. Please try again later."
 )
 async def delete_history(
@@ -596,7 +595,7 @@ async def delete_history(
 # SLT Model routes
 @app.get("/slt/health")
 @limiter.limit(
-    "5/minute",
+    "10/minute",
     error_message="Too many model requests. Please try again later."
 )
 async def slt_health(
@@ -660,7 +659,7 @@ async def websocket_translate(
 
 @app.get("/slp/health")
 @limiter.limit(
-    "5/minute",
+    "10/minute",
     error_message="Too many model requests. Please try again later."
 )
 async def slp_health(

@@ -36,7 +36,7 @@ jobs:
         run: |
           cat > .env <<'EOF'
           API_BASE_URL=http://localhost:5000
-          WS_URL=ws://localhost:5000/ws
+          WS_URL=ws://localhost:5000/slt/ws
           EOF
 
       - name: Analyze

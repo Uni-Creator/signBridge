@@ -43,7 +43,10 @@ def _load_module(name, filename, fake_modules=None, env=None, env_remove=(), pat
     import importlib.util
     from contextlib import ExitStack
 
-    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parents[1] / filename)
+    spec = importlib.util.spec_from_file_location(
+        name,
+        Path(__file__).resolve().parents[2] / filename,
+    )
     module = importlib.util.module_from_spec(spec)
     with ExitStack() as stack:
         stack.enter_context(patch.dict(sys.modules, fake_modules or {}))
@@ -880,7 +883,8 @@ class WebSocketHandlerTests(_HandlerTestCase):
 class WebSocketProcessingTests(unittest.TestCase):
     def setUp(self):
         self.proc = _load_module(
-            "websocket_processing_under_test", "app/websocket/websocket_processing.py",
+            "websocket_processing_under_test", 
+            "app/websocket/websocket_processing.py",
             env={"ENABLE_MEDIAPIPE": "0"},
         )
 
@@ -974,17 +978,36 @@ class WebSocketProcessingTests(unittest.TestCase):
 
     def test_build_landmarkers_creates_pose_and_hand_detectors(self):
         vision, python = MagicMock(), MagicMock()
+        pose_path = "/fake/models/pose_landmarker_full.task"
+        hand_path = "/fake/models/hand_landmarker.task"
+
+        def fake_resolve_model_path(filename, env_var):
+            if filename == self.proc.POSE_LANDMARKER_PATH:
+                return pose_path
+            if filename == self.proc.HAND_LANDMARKER_PATH:
+                return hand_path
+            return None
+
         with patch.object(self.proc, "MEDIAPIPE_OK", True), \
                 patch.object(self.proc, "mp_vision", vision), \
-                patch.object(self.proc, "mp_python", python):
+                patch.object(self.proc, "mp_python", python), \
+                patch.object(
+                    self.proc,
+                    "resolve_model_path",
+                    side_effect=fake_resolve_model_path,
+                ):
             pose, hand = self.proc.build_landmarkers()
-        self.assertIs(pose, vision.PoseLandmarker.create_from_options.return_value)
-        self.assertIs(hand, vision.HandLandmarker.create_from_options.return_value)
-        self.assertEqual(vision.HandLandmarkerOptions.call_args[1]["num_hands"], 2)
-        model_paths = [c[1]["model_asset_path"] for c in python.BaseOptions.call_args_list]
+        self.assertIs(pose,vision.PoseLandmarker.create_from_options.return_value)
+        self.assertIs(hand,vision.HandLandmarker.create_from_options.return_value)
+        self.assertEqual(vision.HandLandmarkerOptions.call_args[1]["num_hands"],2)
+        model_paths = [c[1]["model_asset_path"]for c in python.BaseOptions.call_args_list]
+
         self.assertEqual(
             [Path(path).name for path in model_paths],
-            ["pose_landmarker_full.task", "hand_landmarker.task"],
+            [
+                "pose_landmarker_full.task",
+                "hand_landmarker.task",
+            ],
         )
 
     def test_build_landmarkers_returns_none_pair_on_init_failure(self):

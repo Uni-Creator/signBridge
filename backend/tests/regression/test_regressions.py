@@ -43,7 +43,7 @@ from starlette.websockets import WebSocketState
 # Load environment variables from .env file for local testing
 load_dotenv()
 
-BACKEND = Path(__file__).resolve().parents[1]
+BACKEND = Path(__file__).resolve().parents[2]
 AUTH = {"Authorization": "Bearer valid"}
 VALID_PASSWORD = "s3cr3tpw"
 
@@ -265,8 +265,8 @@ class BackendRouteTests(unittest.TestCase):
     def test_register_is_rate_limited(self):
         self.authentication.register_account.return_value = {"id": "u", "token": "t"}
         payload = {"email": "a@b.com", "password": VALID_PASSWORD}
-        statuses = self._statuses("post", "/register", 6, json=payload)
-        self.assertEqual(statuses, [200] * 5 + [429])
+        statuses = self._statuses("post", "/register", 11, json=payload)
+        self.assertEqual(statuses, [200] * 10 + [429])
         response = self.client.post("/register", json=payload)
         self.assertEqual(
             response.json(),
@@ -317,7 +317,7 @@ class BackendRouteTests(unittest.TestCase):
     def test_login_is_rate_limited(self):
         self.authentication.login_account.return_value = {"id": "u", "token": "t"}
         payload = {"email": "a@b.com", "password": VALID_PASSWORD}
-        self.assertEqual(self._statuses("post", "/login", 6, json=payload), [200] * 5 + [429])
+        self.assertEqual(self._statuses("post", "/login", 11, json=payload), [200] * 10 + [429])
         response = self.client.post("/login", json=payload)
         self.assertEqual(
             response.json(),
@@ -365,8 +365,8 @@ class BackendRouteTests(unittest.TestCase):
         self.authentication.forgot_password.assert_not_called()
 
     def test_forgot_password_is_rate_limited(self):
-        statuses = self._statuses("post", "/forgot-password", 4, json={"email": "a@b.com"})
-        self.assertEqual(statuses, [200] * 3 + [429])
+        statuses = self._statuses("post", "/forgot-password", 6, json={"email": "a@b.com"})
+        self.assertEqual(statuses, [200] * 5 + [429])
 
     # TESTS - REST: /logout
     def test_logout_success(self):
@@ -385,7 +385,7 @@ class BackendRouteTests(unittest.TestCase):
         with self.assertLogs(self.module.logger, "ERROR"):
             response = self.client.post("/logout", headers=AUTH)
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(response.json(), {"error": "Logout failed"})
+        self.assertEqual(response.json(), {"error": "Logout failed"})   
 
     def test_logout_is_rate_limited(self):
         statuses = self._statuses("post", "/logout", 11, headers=AUTH)
@@ -431,9 +431,9 @@ class BackendRouteTests(unittest.TestCase):
     def test_update_password_is_rate_limited(self):
         self.authentication.update_password.return_value = True
         statuses = self._statuses(
-            "post", "/update-password", 4, json={"password": VALID_PASSWORD}, headers=AUTH
+            "post", "/update-password", 6, json={"password": VALID_PASSWORD}, headers=AUTH
         )
-        self.assertEqual(statuses, [200] * 3 + [429])
+        self.assertEqual(statuses, [200] * 5 + [429])
 
     # TESTS - REST: /slt
     def test_slt_model_returns_deep_health(self):
@@ -695,4 +695,4 @@ class BackendRouteTests(unittest.TestCase):
         )
 
 
-# WebSocket-specific unit tests live in tests/test_regression_websocket.py
+# WebSocket-specific unit tests live in tests/test_regression_websocket.py  

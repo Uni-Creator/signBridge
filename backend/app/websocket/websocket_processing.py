@@ -51,7 +51,7 @@ import numpy as np
 from PIL import Image
 from dataclasses import dataclass
 from io import BytesIO
-
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -158,8 +158,12 @@ else:
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-POSE_MODEL_NAME = "pose_landmarker_full.task"
-HAND_MODEL_NAME = "hand_landmarker.task"
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MODELS_DIR = PROJECT_ROOT / "models"
+
+POSE_LANDMARKER_PATH = MODELS_DIR / "pose_landmarker_full.task"
+HAND_LANDMARKER_PATH = MODELS_DIR / "hand_landmarker.task"
 
 POSE_MODEL_ENV = "POSE_LANDMARKER_MODEL"
 HAND_MODEL_ENV = "HAND_LANDMARKER_MODEL"
@@ -237,7 +241,7 @@ def _log_missing_models(missing: list):
         "landmark overlays). Searched: %s. "
         "Place the files in one of those folders, or set %s / %s "
         "(file paths) or %s (folder).",
-        ", ".join(missing),
+        ", ".join(str(path) for path in missing),
         searched,
         POSE_MODEL_ENV,
         HAND_MODEL_ENV,
@@ -266,14 +270,14 @@ def build_landmarkers():
         )
         return None, None
 
-    pose_path = resolve_model_path(POSE_MODEL_NAME, POSE_MODEL_ENV)
-    hand_path = resolve_model_path(HAND_MODEL_NAME, HAND_MODEL_ENV)
+    pose_path = resolve_model_path(POSE_LANDMARKER_PATH, POSE_MODEL_ENV)
+    hand_path = resolve_model_path(HAND_LANDMARKER_PATH, HAND_MODEL_ENV)
 
     missing = [
         _describe_missing(name, env_var)
         for name, env_var, path in (
-            (POSE_MODEL_NAME, POSE_MODEL_ENV, pose_path),
-            (HAND_MODEL_NAME, HAND_MODEL_ENV, hand_path),
+            (POSE_LANDMARKER_PATH, POSE_MODEL_ENV, pose_path),
+            (HAND_LANDMARKER_PATH, HAND_MODEL_ENV, hand_path),
         )
         if path is None
     ]
@@ -331,7 +335,7 @@ def _drawable(landmarks):
 
     if RESPECT_LANDMARK_VISIBILITY:
         return landmarks
-
+    
     return [
         mp_landmark.NormalizedLandmark(
             x=landmark.x,
