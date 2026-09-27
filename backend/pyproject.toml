@@ -5,9 +5,9 @@ description = "SignBridge backend: Flask REST API and WebSocket sign-language tr
 requires-python = ">=3.12,<3.14"
 dependencies = [
     # Firebase / auth
-    "firebase-admin==7.5.0",
+    "firebase-admin==7.7.0",
     # Image + landmark processing
-    "numpy==2.2.6",
+    "numpy==2.5.3",
     "pillow==12.3.0",
     "opencv-python-headless==5.0.0.93",
     "mediapipe==1.0.1",
