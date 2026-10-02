@@ -24,7 +24,7 @@ if not JWT_TOKEN:
         "JWT_TOKEN is missing. Add it to the .env file."
     )
 
-DEFAULT_URL = "ws://127.0.0.1:5000/slt/ws"
+DEFAULT_URL = "ws://127.0.0.1:5000/slt/v1/ws"
 CONFIG_VERSION = 1
 
 # Must match websocket_handler.py's VALID_TRANSPORTS / UNIMPLEMENTED_TRANSPORTS.

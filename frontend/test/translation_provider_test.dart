@@ -33,7 +33,7 @@ void main() {
         () => provider.loadHistory('user1', token: 'tok1'),
         (request) async {
           backendHitCount++;
-          expect(request.url.path, '/history');
+          expect(request.url.path, '/me/history');
           return http.Response(
             jsonEncode({
               'history': [
@@ -159,7 +159,7 @@ void main() {
       await _run(
         () => provider.deleteHistoryItem('item1', token: 'tok1'),
         (request) async {
-          expect(request.url.path, '/history/item1');
+          expect(request.url.path, '/me/history/item1');
           expect(request.method, 'DELETE');
           return http.Response(jsonEncode({'success': true}), 200);
         },
@@ -228,7 +228,7 @@ void main() {
       await _run(
         () => provider.saveTranslation('user1', 'New translation', token: 'tok1'),
         (request) async {
-          expect(request.url.path, '/history/store');
+          expect(request.url.path, '/me/history');
           expect(request.method, 'POST');
           return http.Response(
             jsonEncode({

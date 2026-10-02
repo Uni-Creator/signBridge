@@ -48,7 +48,7 @@ def auth_headers(token: str) -> dict:
 
 
 def login(client, email: str, password: str) -> dict:
-    resp = client.post("/login", json={"email": email, "password": password})
+    resp = client.post("/auth/login", json={"email": email, "password": password})
     assert resp.status_code == 200, f"login failed: {resp.status_code} {resp.text}"
     body = resp.json()
     assert body.get("token"), f"login response missing token: {body}"
@@ -57,7 +57,7 @@ def login(client, email: str, password: str) -> dict:
 
 
 def register(client, email: str, password: str) -> dict:
-    resp = client.post("/register", json={"email": email, "password": password})
+    resp = client.post("/auth/register", json={"email": email, "password": password})
     assert resp.status_code == 200, f"register failed: {resp.status_code} {resp.text}"
     body = resp.json()
     assert body.get("token"), f"register response missing token: {body}"
@@ -66,14 +66,14 @@ def register(client, email: str, password: str) -> dict:
 
 
 def forgot_password(client, email: str) -> None:
-    resp = client.post("/forgot-password", json={"email": email})
+    resp = client.post("/auth/forgot-password", json={"email": email})
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"success": "Password reset email has been sent."}
 
 
 def update_password(client, token: str, new_password: str) -> None:
     resp = client.post(
-        "/update-password",
+        "/auth/update-password",
         json={"password": new_password},
         headers=auth_headers(token),
     )
@@ -82,14 +82,14 @@ def update_password(client, token: str, new_password: str) -> None:
 
 
 def logout(client, token: str) -> None:
-    resp = client.post("/logout", headers=auth_headers(token))
+    resp = client.post("/auth/logout", headers=auth_headers(token))
     assert resp.status_code == 200, f"logout failed: {resp.status_code} {resp.text}"
     assert resp.json() == {"message": "Logged out successfully"}
 
 
 def assert_token_rejected(client, token: str) -> None:
     """A revoked/expired token must be rejected on a protected route."""
-    resp = client.get("/history", headers=auth_headers(token))
+    resp = client.get("/me/history", headers=auth_headers(token))
     assert resp.status_code == 401, (
         f"expected the logged-out token to be rejected, got "
         f"{resp.status_code}: {resp.text}"
@@ -97,7 +97,7 @@ def assert_token_rejected(client, token: str) -> None:
 
 
 def get_history(client, token: str) -> list:
-    resp = client.get("/history", headers=auth_headers(token))
+    resp = client.get("/me/history", headers=auth_headers(token))
     assert resp.status_code == 200, f"get history failed: {resp.status_code} {resp.text}"
     body = resp.json()
     assert "history" in body
@@ -106,7 +106,7 @@ def get_history(client, token: str) -> list:
 
 def store_translation(client, token: str, text: str) -> dict:
     resp = client.post(
-        "/history/store",
+        "/me/history",
         json={"translation": text},
         headers=auth_headers(token),
     )
@@ -118,21 +118,25 @@ def store_translation(client, token: str, text: str) -> dict:
 
 
 def delete_translation(client, token: str, translation_id: str) -> None:
-    resp = client.delete(f"/history/{translation_id}", headers=auth_headers(token))
+    resp = client.delete(
+        f"/me/history/{translation_id}", 
+        headers=auth_headers(token)
+    )
     assert resp.status_code == 200, f"delete history failed: {resp.status_code} {resp.text}"
     assert resp.json() == {"message": "Translation deleted"}
 
 
 def clear_history(client, token: str) -> None:
-    resp = client.delete("/history/clear", headers=auth_headers(token))
+    resp = client.delete("/me/history", headers=auth_headers(token))
     assert resp.status_code in (200, 404), (
         f"clear history failed unexpectedly: {resp.status_code} {resp.text}"
     )
 
 
+
 def get_slt_deep_health(client, token: str) -> dict:
-    resp = client.get("/slt/health/deep", headers=auth_headers(token))
+    resp = client.get("/slt/v1/health/deep", headers=auth_headers(token))
     assert resp.status_code in (200, 503), (
-        f"unexpected status from /slt/health/deep: {resp.status_code} {resp.text}"
+        f"unexpected status from /slt/v1/health/deep: {resp.status_code} {resp.text}"
     )
     return resp.json()

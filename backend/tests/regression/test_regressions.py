@@ -2,7 +2,7 @@
 
 Nothing here touches the network, Firebase, MediaPipe or the hosted model:
 external services are replaced with mocks while the real FastAPI routes, the
-native ASGI WebSocket handler, the processing helpers and the auth/history
+native ASGI WebSocket handler, the processing helpers and the auth/{user_id}/history
 helpers run.
 
 Run from the repository root: python -m unittest discover -s tests -v
@@ -206,12 +206,12 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(body["message"], "SignBridge API is running")
         self.assertEqual(body["version"], "2.0")
 
-    # TESTS - REST: /register
+    # TESTS - REST: /auth/register
     def test_register_success(self):
-        """POST /register with valid credentials returns id and token."""
+        """POST /auth/register with valid credentials returns id and token."""
         self.authentication.register_account.return_value = {"id": "uid1", "token": "tok1"}
         response = self.client.post(
-            "/register", json={"email": "a@b.com", "password": VALID_PASSWORD}
+            "/auth/register", json={"email": "a@b.com", "password": VALID_PASSWORD}
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"id": "uid1", "token": "tok1"})
@@ -235,50 +235,50 @@ class BackendRouteTests(unittest.TestCase):
         for label, payload, expected in cases:
             with self.subTest(label):
                 self.module.limiter.reset()  # 5/min limit would otherwise trip
-                self._assert_invalid_body(self.client.post("/register", json=payload), expected)
+                self._assert_invalid_body(self.client.post("/auth/register", json=payload), expected)
         self.authentication.register_account.assert_not_called()
 
     def test_register_accepts_short_single_char_tld_email(self):
         """pydantic's EmailStr treats a single-character TLD (e.g. 'a@b.c') as valid."""
         self.authentication.register_account.return_value = {"id": "u", "token": "t"}
         response = self.client.post(
-            "/register", json={"email": "a@b.c", "password": VALID_PASSWORD}
+            "/auth/register", json={"email": "a@b.c", "password": VALID_PASSWORD}
         )
         self.assertEqual(response.status_code, 200)
         self.authentication.register_account.assert_called_once_with("a@b.c", VALID_PASSWORD)
 
     def test_register_no_json_returns_400(self):
-        """POST /register with a non-JSON body is treated as an invalid (missing) body."""
-        response = self.client.post("/register", content="not json", headers={"Content-Type": "text/plain"})
+        """POST /auth/register with a non-JSON body is treated as an invalid (missing) body."""
+        response = self.client.post("/auth/register", content="not json", headers={"Content-Type": "text/plain"})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "Invalid request body")
         self.authentication.register_account.assert_not_called()
 
     def test_register_backend_failure_returns_400(self):
-        """POST /register returns 400 with an error message when the backend returns None."""
+        """POST /auth/register returns 400 with an error message when the backend returns None."""
         self.authentication.register_account.return_value = None
         response = self.client.post(
-            "/register", json={"email": "a@b.com", "password": VALID_PASSWORD}
+            "/auth/register", json={"email": "a@b.com", "password": VALID_PASSWORD}
         )
         self._assert_rejected(response, "Registration failed")
 
     def test_register_is_rate_limited(self):
         self.authentication.register_account.return_value = {"id": "u", "token": "t"}
         payload = {"email": "a@b.com", "password": VALID_PASSWORD}
-        statuses = self._statuses("post", "/register", 11, json=payload)
+        statuses = self._statuses("post", "/auth/register", 11, json=payload)
         self.assertEqual(statuses, [200] * 10 + [429])
-        response = self.client.post("/register", json=payload)
+        response = self.client.post("/auth/register", json=payload)
         self.assertEqual(
             response.json(),
             {"error": "Too many registration attempts. Please try again later."},
         )
 
-    # TESTS - REST: /login
+    # TESTS - REST: /auth/login
     def test_login_success(self):
-        """POST /login with valid credentials returns id and token."""
+        """POST /auth/login with valid credentials returns id and token."""
         self.authentication.login_account.return_value = {"id": "uid2", "token": "tok2"}
         response = self.client.post(
-            "/login", json={"email": "a@b.com", "password": VALID_PASSWORD}
+            "/auth/login", json={"email": "a@b.com", "password": VALID_PASSWORD}
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"id": "uid2", "token": "tok2"})
@@ -297,36 +297,36 @@ class BackendRouteTests(unittest.TestCase):
         for label, payload, expected in cases:
             with self.subTest(label):
                 self.module.limiter.reset()
-                self._assert_invalid_body(self.client.post("/login", json=payload), expected)
+                self._assert_invalid_body(self.client.post("/auth/login", json=payload), expected)
         self.authentication.login_account.assert_not_called()
 
     def test_login_no_json_returns_400(self):
-        response = self.client.post("/login", content="bad", headers={"Content-Type": "text/plain"})
+        response = self.client.post("/auth/login", content="bad", headers={"Content-Type": "text/plain"})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "Invalid request body")
         self.authentication.login_account.assert_not_called()
 
     def test_login_backend_failure_returns_400(self):
-        """POST /login returns 400 when the backend returns None (wrong credentials)."""
+        """POST /auth/login returns 400 when the backend returns None (wrong credentials)."""
         self.authentication.login_account.return_value = None
         response = self.client.post(
-            "/login", json={"email": "a@b.com", "password": "wrongpass"}
+            "/auth/login", json={"email": "a@b.com", "password": "wrongpass"}
         )
         self._assert_rejected(response, "Login failed")
 
     def test_login_is_rate_limited(self):
         self.authentication.login_account.return_value = {"id": "u", "token": "t"}
         payload = {"email": "a@b.com", "password": VALID_PASSWORD}
-        self.assertEqual(self._statuses("post", "/login", 11, json=payload), [200] * 10 + [429])
-        response = self.client.post("/login", json=payload)
+        self.assertEqual(self._statuses("post", "/auth/login", 11, json=payload), [200] * 10 + [429])
+        response = self.client.post("/auth/login", json=payload)
         self.assertEqual(
             response.json(),
             {"error": "Too many login attempts. Please try again later."},
         )
 
-    # TESTS - REST: /forgot-password
+    # TESTS - REST: /auth/forgot-password
     def test_forgot_password_success(self):
-        response = self.client.post("/forgot-password", json={"email": "a@b.com"})
+        response = self.client.post("/auth/forgot-password", json={"email": "a@b.com"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.json(), {"success": "Password reset email has been sent."}
@@ -339,7 +339,7 @@ class BackendRouteTests(unittest.TestCase):
             with self.subTest(outcome=outcome):
                 self.module.limiter.reset()
                 self.authentication.forgot_password.return_value = outcome
-                response = self.client.post("/forgot-password", json={"email": "a@b.com"})
+                response = self.client.post("/auth/forgot-password", json={"email": "a@b.com"})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(
                     response.json(), {"success": "Password reset email has been sent."}
@@ -355,54 +355,54 @@ class BackendRouteTests(unittest.TestCase):
             with self.subTest(label):
                 self.module.limiter.reset()
                 self._assert_invalid_body(
-                    self.client.post("/forgot-password", json=payload), expected
+                    self.client.post("/auth/forgot-password", json=payload), expected
                 )
         self.authentication.forgot_password.assert_not_called()
 
     def test_forgot_password_no_json_returns_400(self):
-        response = self.client.post("/forgot-password", content="bad", headers={"Content-Type": "text/plain"})
+        response = self.client.post("/auth/forgot-password", content="bad", headers={"Content-Type": "text/plain"})
         self.assertEqual(response.status_code, 400)
         self.authentication.forgot_password.assert_not_called()
 
     def test_forgot_password_is_rate_limited(self):
-        statuses = self._statuses("post", "/forgot-password", 6, json={"email": "a@b.com"})
+        statuses = self._statuses("post", "/auth/forgot-password", 6, json={"email": "a@b.com"})
         self.assertEqual(statuses, [200] * 5 + [429])
 
-    # TESTS - REST: /logout
+    # TESTS - REST: /auth/logout
     def test_logout_success(self):
-        response = self.client.post("/logout", headers=AUTH)
+        response = self.client.post("/auth/logout", headers=AUTH)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"message": "Logged out successfully"})
         self.authentication.logout_user.assert_called_once_with("alice")
 
     def test_logout_requires_auth(self):
-        response = self.client.post("/logout")
+        response = self.client.post("/auth/logout")
         self.assertEqual(response.status_code, 401)
         self.authentication.logout_user.assert_not_called()
 
     def test_logout_failure_returns_500(self):
         self.authentication.logout_user.side_effect = RuntimeError("boom")
         with self.assertLogs(self.module.logger, "ERROR"):
-            response = self.client.post("/logout", headers=AUTH)
+            response = self.client.post("/auth/logout", headers=AUTH)
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"error": "Logout failed"})   
 
     def test_logout_is_rate_limited(self):
-        statuses = self._statuses("post", "/logout", 11, headers=AUTH)
+        statuses = self._statuses("post", "/auth/logout", 11, headers=AUTH)
         self.assertEqual(statuses, [200] * 10 + [429])
 
-    # TESTS - REST: /update-password
+    # TESTS - REST: /auth/update-password
     def test_update_password_success(self):
         self.authentication.update_password.return_value = True
         response = self.client.post(
-            "/update-password", json={"password": VALID_PASSWORD}, headers=AUTH
+            "/auth/update-password", json={"password": VALID_PASSWORD}, headers=AUTH
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"success": "Password has been updated."})
         self.authentication.update_password.assert_called_once_with("alice", VALID_PASSWORD)
 
     def test_update_password_requires_auth(self):
-        response = self.client.post("/update-password", json={"password": VALID_PASSWORD})
+        response = self.client.post("/auth/update-password", json={"password": VALID_PASSWORD})
         self.assertEqual(response.status_code, 401)
         self.authentication.update_password.assert_not_called()
 
@@ -416,14 +416,14 @@ class BackendRouteTests(unittest.TestCase):
             with self.subTest(label):
                 self.module.limiter.reset()
                 self._assert_invalid_body(
-                    self.client.post("/update-password", json=payload, headers=AUTH), expected
+                    self.client.post("/auth/update-password", json=payload, headers=AUTH), expected
                 )
         self.authentication.update_password.assert_not_called()
 
     def test_update_password_backend_failure_returns_500(self):
         self.authentication.update_password.return_value = False
         response = self.client.post(
-            "/update-password", json={"password": VALID_PASSWORD}, headers=AUTH
+            "/auth/update-password", json={"password": VALID_PASSWORD}, headers=AUTH
         )
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"error": "Password update failed."})
@@ -431,7 +431,7 @@ class BackendRouteTests(unittest.TestCase):
     def test_update_password_is_rate_limited(self):
         self.authentication.update_password.return_value = True
         statuses = self._statuses(
-            "post", "/update-password", 6, json={"password": VALID_PASSWORD}, headers=AUTH
+            "post", "/auth/update-password", 6, json={"password": VALID_PASSWORD}, headers=AUTH
         )
         self.assertEqual(statuses, [200] * 5 + [429])
 
@@ -440,43 +440,43 @@ class BackendRouteTests(unittest.TestCase):
         self.model.ISLModelAPI.return_value.deep_health.return_value = {
             "isl_model_status": "connected"
         }
-        response = self.client.get("/slt/health/deep", headers=AUTH)
+        response = self.client.get("/slt/v1/health/deep", headers=AUTH)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"isl_model_status": "connected"})
 
     def test_slt_model_requires_auth(self):
-        response = self.client.get("/slt/health/deep")
+        response = self.client.get("/slt/v1/health/deep")
         self.assertEqual(response.status_code, 401)
 
     def test_slt_model_failure_returns_503(self):
         self.model.ISLModelAPI.return_value.deep_health.side_effect = RuntimeError("down")
         with self.assertLogs(self.module.logger, "ERROR"):
-            response = self.client.get("/slt/health/deep", headers=AUTH)
+            response = self.client.get("/slt/v1/health/deep", headers=AUTH)
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json(), {"error": "Model not ready"})
 
     def test_slt_model_is_rate_limited(self):
         self.model.ISLModelAPI.return_value.deep_health.return_value = {}
-        statuses = self._statuses("get", "/slt/health/deep", 6, headers=AUTH)
+        statuses = self._statuses("get", "/slt/v1/health/deep", 6, headers=AUTH)
         self.assertEqual(statuses, [200] * 5 + [429])
 
     # TESTS - REST: authentication on protected routes
     def test_protected_routes_reject_missing_token(self):
         routes = [
-            ("get", "/history"),
-            ("post", "/history/store"),
-            ("delete", "/history/abc"),
-            ("delete", "/history/clear"),
-            ("post", "/logout"),
-            ("post", "/update-password"),
-            ("get", "/slt/health/deep"),
+            ("get", "/me/history"),
+            ("post", "/me/history"),
+            ("delete", "/me/history/abc"),
+            ("delete", "/me/history"),
+            ("post", "/auth/logout"),
+            ("post", "/auth/update-password"),
+            ("get", "/slt/v1/health/deep"),
         ]
         for method, path in routes:
             with self.subTest(route=f"{method.upper()} {path}"):
                 kwargs = {}
-                if path == "/history/store":
+                if path == "/me/history" and method == "post":
                     kwargs = {"json": {"translation": "x"}}
-                elif path == "/update-password":
+                elif path == "/auth/update-password":
                     kwargs = {"json": {"password": VALID_PASSWORD}}
                 response = getattr(self.client, method)(path, **kwargs)
                 self.assertEqual(response.status_code, 401)
@@ -490,7 +490,7 @@ class BackendRouteTests(unittest.TestCase):
         self.authentication.update_password.assert_not_called()
 
     def test_require_auth_rejects_wrong_scheme(self):
-        response = self.client.get("/history", headers={"Authorization": "Basic abc123"})
+        response = self.client.get("/me/history", headers={"Authorization": "Basic abc123"})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {"error": "Missing or invalid token"})
         self.auth.verify_id_token.assert_not_called()
@@ -499,32 +499,32 @@ class BackendRouteTests(unittest.TestCase):
         for error in (ValueError("bad token"), Exception("bad")):
             with self.subTest(error=repr(error)):
                 self.auth.verify_id_token.side_effect = error
-                response = self.client.get("/history", headers={"Authorization": "Bearer invalid"})
+                response = self.client.get("/me/history", headers={"Authorization": "Bearer invalid"})
                 self.assertEqual(response.status_code, 401)
                 self.assertEqual(response.json(), {"error": "Invalid token"})
         self.history.retrieve_history.assert_not_called()
 
     def test_require_auth_reports_expired_tokens(self):
         self.auth.verify_id_token.side_effect = self.auth.ExpiredIdTokenError()
-        response = self.client.get("/history", headers={"Authorization": "Bearer old"})
+        response = self.client.get("/me/history", headers={"Authorization": "Bearer old"})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {"error": "Token expired"})
         self.history.retrieve_history.assert_not_called()
 
     def test_require_auth_reports_revoked_tokens(self):
         self.auth.verify_id_token.side_effect = self.auth.RevokedIdTokenError()
-        response = self.client.get("/history", headers={"Authorization": "Bearer old"})
+        response = self.client.get("/me/history", headers={"Authorization": "Bearer old"})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {"error": "Token revoked"})
         self.history.retrieve_history.assert_not_called()
 
     def test_require_auth_passes_bare_token_and_check_revoked_to_verifier(self):
-        self.client.get("/history", headers={"Authorization": "Bearer abc.def.ghi"})
+        self.client.get("/me/history", headers={"Authorization": "Bearer abc.def.ghi"})
         self.auth.verify_id_token.assert_called_once_with("abc.def.ghi", check_revoked=True)
 
-    # TESTS - REST: GET /history
+    # TESTS - REST: GET /me/history
     def test_history_uses_token_owner_even_with_another_id(self):
-        response = self.client.get("/history?id=bob", headers=AUTH)
+        response = self.client.get("/me/history?id=bob", headers=AUTH)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"history": ["hello"]})
         self.history.retrieve_history.assert_called_once_with("alice")
@@ -535,20 +535,20 @@ class BackendRouteTests(unittest.TestCase):
             {"id": "-N1", "translation": "hello", "timestamp": "2025-01-01T00:00:00"},
         ]
         self.history.retrieve_history.return_value = items
-        response = self.client.get("/history", headers=AUTH)
+        response = self.client.get("/me/history", headers=AUTH)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"history": items})
 
     def test_history_get_empty_list(self):
         self.history.retrieve_history.return_value = []
-        response = self.client.get("/history", headers=AUTH)
+        response = self.client.get("/me/history", headers=AUTH)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"history": []})
 
     def test_history_get_failure_returns_500(self):
         self.history.retrieve_history.side_effect = RuntimeError("db down")
         with self.assertLogs(self.module.logger, "ERROR"):
-            response = self.client.get("/history", headers=AUTH)
+            response = self.client.get("/me/history", headers=AUTH)
         self.assertEqual(response.status_code, 500)
         self.assertEqual(
             response.json(),
@@ -556,28 +556,22 @@ class BackendRouteTests(unittest.TestCase):
         )
 
     def test_history_get_is_rate_limited_per_user(self):
-        self.assertEqual(self._statuses("get", "/history", 21, headers=AUTH), [200] * 20 + [429])
-        response = self.client.get("/history", headers=AUTH)
+        self.assertEqual(self._statuses("get", "/me/history", 21, headers=AUTH), [200] * 20 + [429])
+        response = self.client.get("/me/history", headers=AUTH)
         self.assertEqual(
             response.json(),
             {"error": "Too many history requests. Please try again later."},
         )
         # A different signed-in user has their own bucket.
         self.auth.verify_id_token.return_value = {"uid": "bob"}
-        self.assertEqual(self.client.get("/history", headers=AUTH).status_code, 200)
+        self.assertEqual(self.client.get("/me/history", headers=AUTH).status_code, 200)
 
-    def test_post_to_history_root_is_no_longer_supported(self):
-        """Writes moved to POST /history/store."""
-        response = self.client.post("/history", json={"translation": "hello"}, headers=AUTH)
-        self.assertEqual(response.status_code, 405)
-        self.history.store_translation.assert_not_called()
-
-    # TESTS - REST: POST /history/store
+    # TESTS - REST: POST /me/history
     def test_history_store_returns_created_item_for_token_owner(self):
         item = {"id": "-N1", "translation": "hello", "timestamp": "2025-01-01T00:00:00"}
         self.history.store_translation.return_value = item
         response = self.client.post(
-            "/history/store", json={"translation": "hello"}, headers=AUTH
+            "/me/history", json={"translation": "hello"}, headers=AUTH
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json(), item)
@@ -586,7 +580,7 @@ class BackendRouteTests(unittest.TestCase):
     def test_history_store_uses_uid_from_verified_token(self):
         self.auth.verify_id_token.return_value = {"uid": "carol"}
         self.history.store_translation.return_value = {"id": "x"}
-        self.client.post("/history/store", json={"translation": "world"}, headers=AUTH)
+        self.client.post("/me/history", json={"translation": "world"}, headers=AUTH)
         self.history.store_translation.assert_called_once_with("carol", "world")
 
     def test_history_store_missing_translation_returns_400(self):
@@ -613,7 +607,7 @@ class BackendRouteTests(unittest.TestCase):
         ]
         for payload, expected_body in cases:
             with self.subTest(payload=payload):
-                response = self.client.post("/history/store", json=payload, headers=AUTH)
+                response = self.client.post("/me/history", json=payload, headers=AUTH)
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(response.json(), expected_body)
         self.history.store_translation.assert_not_called()
@@ -621,11 +615,11 @@ class BackendRouteTests(unittest.TestCase):
     def test_history_store_rejects_bodies_that_are_not_json(self):
         """A body that fails to parse as JSON is rejected regardless of Content-Type."""
         bad_json = self.client.post(
-            "/history/store", content="{oops", headers={**AUTH, "Content-Type": "application/json"}
+            "/me/history", content="{oops", headers={**AUTH, "Content-Type": "application/json"}
         )
         self.assertEqual(bad_json.status_code, 400)
         wrong_type = self.client.post(
-            "/history/store", content="not json", headers={**AUTH, "Content-Type": "text/plain"}
+            "/me/history", content="not json", headers={**AUTH, "Content-Type": "text/plain"}
         )
         self.assertEqual(wrong_type.status_code, 400)
         self.history.store_translation.assert_not_called()
@@ -634,36 +628,36 @@ class BackendRouteTests(unittest.TestCase):
         self.history.store_translation.side_effect = RuntimeError("db down")
         with self.assertLogs(self.module.logger, "ERROR"):
             response = self.client.post(
-                "/history/store", json={"translation": "hello"}, headers=AUTH
+                "/me/history", json={"translation": "hello"}, headers=AUTH
             )
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"error": "Failed to store history"})
 
-    # TESTS - REST: DELETE /history/<id> and /history/clear
+    # TESTS - REST: DELETE /me/history/<id> and /me/history
     def test_history_delete_success_scoped_to_token_owner(self):
         self.history.delete_translation.return_value = True
-        response = self.client.delete("/history/-N1", headers=AUTH)
+        response = self.client.delete("/me/history/-N1", headers=AUTH)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"message": "Translation deleted"})
         self.history.delete_translation.assert_called_once_with("alice", "-N1")
 
     def test_history_delete_unknown_id_returns_404(self):
         self.history.delete_translation.return_value = False
-        response = self.client.delete("/history/missing", headers=AUTH)
+        response = self.client.delete("/me/history/missing", headers=AUTH)
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), {"error": "Translation not found"})
 
     def test_history_delete_failure_returns_500(self):
         self.history.delete_translation.side_effect = RuntimeError("db down")
         with self.assertLogs(self.module.logger, "ERROR"):
-            response = self.client.delete("/history/-N1", headers=AUTH)
+            response = self.client.delete("/me/history/-N1", headers=AUTH)
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"error": "Failed to delete history"})
 
     def test_history_clear_is_not_shadowed_by_delete_by_id(self):
-        """DELETE /history/clear must reach clear_history, not delete_history('clear')."""
+        """DELETE /me/history must reach clear_history, not delete_history('clear')."""
         self.history.delete_all_translations.return_value = True
-        response = self.client.delete("/history/clear", headers=AUTH)
+        response = self.client.delete("/me/history", headers=AUTH)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"message": "History deleted"})
         self.history.delete_all_translations.assert_called_once_with("alice")
@@ -671,16 +665,17 @@ class BackendRouteTests(unittest.TestCase):
 
     def test_history_clear_when_nothing_stored_returns_404(self):
         self.history.delete_all_translations.return_value = False
-        response = self.client.delete("/history/clear", headers=AUTH)
+        response = self.client.delete("/me/history", headers=AUTH)
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), {"error": "No history found"})
 
     def test_history_clear_failure_returns_500(self):
         self.history.delete_all_translations.side_effect = RuntimeError("db down")
         with self.assertLogs(self.module.logger, "ERROR"):
-            response = self.client.delete("/history/clear", headers=AUTH)
+            response = self.client.delete("/me/history", headers=AUTH)
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"error": "Failed to delete history"})
+
 
     # TESTS - WebSocket route wiring (behaviour lives in WebSocketHandlerTests)
     def test_ws_route_is_registered(self):
@@ -691,7 +686,7 @@ class BackendRouteTests(unittest.TestCase):
         ]
         self.assertEqual(
             [r.path for r in ws_routes],
-            ["/slt/ws", "/slp/ws"],
+            ["/slt/v1/ws"],
         )
 
 

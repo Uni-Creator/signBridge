@@ -14,7 +14,7 @@ class ApiService {
   ) async {
     final response = await http
         .post(
-          Uri.parse('$baseUrl/login'),
+          Uri.parse('$baseUrl/auth/login'),
           headers: {
             'Content-Type': 'application/json',
           },
@@ -45,7 +45,7 @@ class ApiService {
   ) async {
     final response = await http
         .post(
-          Uri.parse('$baseUrl/register'),
+          Uri.parse('$baseUrl/auth/register'),
           headers: {
             'Content-Type': 'application/json',
           },
@@ -73,7 +73,7 @@ class ApiService {
   static Future<void> logout(String token) async {
     final response = await http
         .post(
-          Uri.parse('$baseUrl/logout'),
+          Uri.parse('$baseUrl/auth/logout'),
           headers: {
             'Authorization': 'Bearer $token',
             'Content-Type': 'application/json',
@@ -107,7 +107,7 @@ class ApiService {
   ) async {
     final response = await http
         .post(
-          Uri.parse('$baseUrl/forgot-password'),
+          Uri.parse('$baseUrl/auth/forgot-password'),
           headers: {
             'Content-Type': 'application/json',
           },
@@ -135,7 +135,7 @@ class ApiService {
   ) async {
     final response = await http
         .post(
-          Uri.parse('$baseUrl/update-password'),
+          Uri.parse('$baseUrl/auth/update-password'),
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $token',
@@ -165,7 +165,7 @@ class ApiService {
   ) async {
     final response = await http
         .get(
-          Uri.parse('$baseUrl/history'),
+          Uri.parse('$baseUrl/me/history'),
           headers: {
             'Authorization': 'Bearer $token',
           },
@@ -207,7 +207,7 @@ class ApiService {
   ) async {
     final response = await http
         .post(
-          Uri.parse('$baseUrl/history/store'),
+          Uri.parse('$baseUrl/me/history'),
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $token',
@@ -256,7 +256,7 @@ class ApiService {
   ) async {
     final response = await http
         .delete(
-          Uri.parse('$baseUrl/history/$id'),
+          Uri.parse('$baseUrl/me/history/$id'),
           headers: {
             'Authorization': 'Bearer $token',
           },
@@ -280,12 +280,13 @@ class ApiService {
   ) async {
     final response = await http
         .delete(
-          Uri.parse('$baseUrl/history/clear'),
+          Uri.parse('$baseUrl/me/history'),
           headers: {
             'Authorization': 'Bearer $token',
           },
         )
         .timeout(const Duration(seconds: 10));
+
 
     if (response.statusCode < 200 ||
         response.statusCode >= 300) {

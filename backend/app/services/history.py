@@ -4,7 +4,7 @@ from datetime import datetime
 
 
 def _history_ref(user_id):
-    return db.reference(f"user/{user_id}/history")
+    return db.reference(f"user/{user_id}/{user_id}/history")
 
 
 def retrieve_history(user_id):

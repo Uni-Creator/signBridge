@@ -28,9 +28,9 @@ CLIP_LENGTH = 16
 FRAME_DELAY = 1 / 12.5  # matches the server's ~12.5 fps expectation
 
 
-async def run_slt_session(ws_url: str, token: str, frame_files: list):
+async def run_slt_session(ws_url: str, token: str, frame_files: list, frame_interval: float = FRAME_DELAY):
     """
-    Connect to /slt/ws with `token`, negotiate the config/handshake,
+    Connect to /slt/v1/ws with `token`, negotiate the config/handshake,
     stream `frame_files` as jpeg_binary frames, send end-of-stream, and
     return (frames_sent, predictions, complete_message).
     """
@@ -67,7 +67,7 @@ async def run_slt_session(ws_url: str, token: str, frame_files: list):
                 continue
             await ws.send(data)
             frames_sent += 1
-            await asyncio.sleep(FRAME_DELAY)
+            await asyncio.sleep(frame_interval)
 
         assert frames_sent >= CLIP_LENGTH, (
             f"only {frames_sent} usable frames; need at least "

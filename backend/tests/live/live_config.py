@@ -24,15 +24,18 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _LIVE_DIR = Path(__file__).resolve().parent
+load_dotenv(_LIVE_DIR / ".env.live")
 load_dotenv(_LIVE_DIR / ".env.live.example")
+load_dotenv(REPO_ROOT / ".env")
 
 RUN_LIVE = os.environ.get("SIGNBRIDGE_RUN_LIVE_TESTS") == "1"
 
 BASE_URL = os.environ.get("SIGNBRIDGE_LIVE_BASE_URL", "http://127.0.0.1:5000").rstrip("/")
 
+
 _configured_ws_url = os.environ.get("SIGNBRIDGE_LIVE_WS_URL")
 WS_URL = _configured_ws_url or (
-    BASE_URL.replace("https://", "wss://").replace("http://", "ws://") + "/slt/ws"
+    BASE_URL.replace("https://", "wss://").replace("http://", "ws://") + "/slt/v1/ws"
 )
 
 REQUEST_TIMEOUT = float(os.environ.get("SIGNBRIDGE_LIVE_TIMEOUT", "15"))

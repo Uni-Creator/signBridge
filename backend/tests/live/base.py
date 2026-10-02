@@ -8,12 +8,16 @@ import unittest
 
 import requests
 
-from live_config import BASE_URL, REQUEST_TIMEOUT, RUN_LIVE, frames_dir
+try:
+    from live_config import BASE_URL, REQUEST_TIMEOUT, RUN_LIVE, frames_dir
+except ImportError:
+    from tests.live.live_config import BASE_URL, REQUEST_TIMEOUT, RUN_LIVE, frames_dir
+
 
 
 class LiveClient:
     """Thin requests.Session wrapper: bakes in BASE_URL + a default
-    timeout so tests can call self.client.get("/history") instead of
+    timeout so tests can call self.client.get("/me/history") instead of
     repeating the full URL and timeout at every call site."""
 
     def __init__(self, session: requests.Session):

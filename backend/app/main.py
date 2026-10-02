@@ -3,16 +3,18 @@
 SignBridge Backend - FastAPI + WebSocket Server
 ================================================
 Endpoints:
-  POST /register        -> Firebase user registration
-  POST /login            -> Firebase user login
-  POST /logout            -> Firebase user logout
-  POST /forgot-password   -> Send password reset email
-  POST /update-password   -> Update password (auth required)
-  GET  /history           -> Retrieve translation history
-  POST /history/store     -> Store a translation
-  DELETE /history/<id>    -> Delete a translation
-  DELETE /history/clear   -> Delete all translations
-  WS   /ws                -> Real-time sign detection
+  POST   /auth/register            -> Firebase user registration
+  POST   /auth/login               -> Firebase user login
+  POST   /auth/logout              -> Firebase user logout
+  POST   /auth/forgot-password     -> Send password reset email
+  POST   /auth/update-password     -> Update password (auth required)
+  DELETE /auth/account             -> Delete authenticated user account
+  GET    /me/history               -> Retrieve translation history
+  POST   /me/history               -> Store a translation
+  DELETE /me/history/<id>          -> Delete a translation
+  DELETE /me/history               -> Delete all translations
+  WS     /slt/v1/ws                -> Real-time sign detection
+
 
 Migrated from Flask + flask-sock + flask-limiter to FastAPI + native
 ASGI WebSockets + slowapi.
@@ -43,8 +45,14 @@ from slowapi.util import get_remote_address
 
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 
+import hmac
+
+
 #  App setup 
-from app.services.authentication import register_account, login_account, logout_user, forgot_password, update_password
+from app.services.authentication import (
+    register_account, login_account, logout_user, forgot_password,
+    update_password, delete_user, delete_users, delete_test_users,
+)
 from app.services.history import retrieve_history, store_translation, delete_translation, delete_all_translations
 from app.websocket.websocket_handler import handle_websocket
 from app.models.model import ISLModelAPI
@@ -66,7 +74,7 @@ RESIZE_DIM = 224
 
 _SAVE_TEST_VIDEOS = os.environ.get("SAVE_TEST_VIDEOS", "0") == "1"
 
-# Shared, application-level executors for the /slt/ws pipeline.
+# Shared, application-level executors for the /slt/v1/ws pipeline.
 #
 # These are created ONCE, here, at import time - not per WebSocket
 # connection. Every connected user's handle_websocket() call is handed
@@ -173,6 +181,17 @@ class StoreTranslationRequest(BaseModel):
 
     translation: str = Field(min_length=1, max_length=5000)
 
+class DeleteUsersRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_ids: list[str] = Field(min_length=1, max_length=1000)
+
+class DeleteUserRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, max_length=100)
+    email: EmailStr
+
 
 #  Auth dependency 
 #  Header-based auth dependency (primary)
@@ -271,6 +290,15 @@ async def require_ws_auth(
             code=status.WS_1008_POLICY_VIOLATION,
             reason="Authentication failed",
         )
+
+ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
+
+
+async def require_admin(x_admin_key: str = Header(default="")) -> None:
+    if not ADMIN_API_KEY:
+        raise StarletteHTTPException(status_code=503, detail="Admin API disabled")
+    if not hmac.compare_digest(x_admin_key.encode(), ADMIN_API_KEY.encode()):
+        raise StarletteHTTPException(status_code=403, detail="Forbidden")
 
 
 #  Error handlers 
@@ -372,7 +400,7 @@ async def deep_health(request: Request):
     return result
 
 
-@app.post("/register")
+@app.post("/auth/register")
 @limiter.limit(
     "10/minute", 
     error_message="Too many registration attempts. Please try again later."
@@ -394,7 +422,7 @@ async def register(request: Request, account: AuthRequest):
     return res
 
 
-@app.post("/login")
+@app.post("/auth/login")
 @limiter.limit(
     "10/minute", 
     error_message="Too many login attempts. Please try again later."
@@ -416,7 +444,7 @@ async def login(request: Request, account: AuthRequest):
     return res
 
 
-@app.post("/logout")
+@app.post("/auth/logout")
 @limiter.limit(
     "10/minute", 
     error_message="Too many logout requests. Please try again later."
@@ -434,8 +462,28 @@ async def logout(request: Request, user_id: str = Depends(require_auth)):
         logger.exception("Failed to logout user")
         raise StarletteHTTPException(status_code=500, detail="Logout failed")
 
+@app.delete("/auth/account")
+@limiter.limit(
+    "5/minute",
+    error_message="Too many delete requests. Please try again later."
+)
+async def delete_account(request: Request, user_id: str = Depends(require_auth)):
+    
+    try:
+        is_deleted = delete_user_account(user_id)
+        if not is_deleted:
+            return {
+                "error" : "Error in deleting account"
+            }
+        return {
+            "success": "Account deleted successfully"
+            }
+    except Exception:
+        logger.exception("Failed to delete account")
+        raise StarletteHTTPException(status_code=500, detail="Account deletion failed")
 
-@app.post("/forgot-password")
+
+@app.post("/auth/forgot-password")
 @limiter.limit(
     "5/minute", 
     error_message="Too many forgot password attempts. Please try again later."
@@ -450,7 +498,7 @@ async def forgot_pwd(request: Request, account: ForgotPasswordRequest):
         }
 
 
-@app.post("/update-password")
+@app.post("/auth/update-password")
 @limiter.limit(
     "5/minute", 
     error_message="Too many password update attempts. Please try again later."
@@ -475,7 +523,7 @@ async def update_pwd(
         }
 
 
-@app.get("/history")
+@app.get("/me/history")
 @limiter.limit(
     "20/minute", 
     error_message="Too many history requests. Please try again later."
@@ -502,9 +550,10 @@ async def get_history(
             )
 
 
-@app.post("/history/store", status_code=201)
+@app.post("/me/history", status_code=201)
+@app.post("/me/history/store", status_code=201)
 @limiter.limit(
-    "50/minute", 
+    "5/minute", 
     error_message="Too many store requests. Please try again later."
 )
 async def store_history(
@@ -524,7 +573,8 @@ async def store_history(
             detail = "Failed to store history"
             )
 
-@app.delete("/history/clear")
+@app.delete("/me/history")
+@app.delete("/me/history/clear")
 @limiter.limit(
     "10/minute", 
     error_message="Too many clear requests. Please try again later."
@@ -558,9 +608,9 @@ async def clear_history(
         )
 
 
-@app.delete("/history/{translation_id}")
+@app.delete("/me/history/{translation_id}")
 @limiter.limit(
-    "60/minute", 
+    "6/minute", 
     error_message="Too many delete history requests. Please try again later."
 )
 async def delete_history(
@@ -591,9 +641,57 @@ async def delete_history(
             detail="Failed to delete history"
         )
 
+# Admin routes
+
+async def _purge_history(uids):
+    """Best-effort cleanup of Firestore data; bulk deletes don't fire onDelete triggers."""
+    for uid in uids:
+        try:
+            await run_in_threadpool(delete_all_translations, uid)
+        except Exception:
+            logger.exception("History cleanup failed for a deleted user")
+
+
+@app.post("/admin/users/delete")
+@limiter.limit("10/minute", error_message="Too many admin requests.")
+async def admin_delete_users(
+    request: Request,
+    data: DeleteUsersRequest,
+    _: None = Depends(require_admin),
+):
+    result = await run_in_threadpool(delete_users, data.user_ids)
+    await _purge_history(result.pop("deleted_uids", []))
+    logger.info(
+        "Admin user deletion: requested=%s deleted=%s failed=%s",
+        result["requested_count"],
+        result["success_count"],
+        result["failure_count"],
+        )
+    return result
+
+
+@app.delete("/admin/users/{user_id}")
+@app.delete("/admin/users/{user_id}/delete")
+@limiter.limit("30/minute", error_message="Too many admin requests.")
+async def admin_delete_user(
+    request: Request,
+    user_id: str,
+    _: None = Depends(require_admin),
+):
+    deleted = await run_in_threadpool(delete_user, user_id)
+
+    if deleted is None:
+        raise StarletteHTTPException(status_code=500, detail="Failed to delete user")
+    if not deleted:
+        raise StarletteHTTPException(status_code=404, detail="User not found")
+
+    await _purge_history([user_id])
+    return {"message": "User deleted"}
+
+
 
 # SLT Model routes
-@app.get("/slt/health")
+@app.get("/slt/v1/health")
 @limiter.limit(
     "10/minute",
     error_message="Too many model requests. Please try again later."
@@ -617,7 +715,7 @@ async def slt_health(
     )
 
 
-@app.get("/slt/health/deep")
+@app.get("/slt/v1/health/deep")
 @limiter.limit(
     "5/minute",
     error_message="Too many model requests. Please try again later."
@@ -637,7 +735,7 @@ async def slt_deep_health(
         )
 
 # SLT WebSocket route 
-@app.websocket("/slt/ws")
+@app.websocket("/slt/v1/ws")
 async def websocket_translate(
     websocket: WebSocket,
     user_id: str = Depends(require_ws_auth),
@@ -657,7 +755,7 @@ async def websocket_translate(
 
 # SLP Model routes
 
-@app.get("/slp/health")
+@app.get("/slp/v1/health")
 @limiter.limit(
     "10/minute",
     error_message="Too many model requests. Please try again later."
@@ -669,7 +767,7 @@ async def slp_health(
     ...
 
 
-@app.get("/slp/health/deep")
+@app.get("/slp/v1/health/deep")
 @limiter.limit(
     "5/minute",
     error_message="Too many model requests. Please try again later."
@@ -682,9 +780,9 @@ async def slp_deep_health(
 
 
 # SLP WebSocket route
-@app.websocket("/slp/ws")
-async def websocket_produce(
-    websocket: WebSocket,
+@app.get("/slp/v1/produce")
+async def produce(
+    request: Request,
     user_id: str = Depends(require_ws_auth),
 ):
     ...
@@ -697,7 +795,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"\n{'='*60}")
     print(f"  SignBridge Backend  ->  http://0.0.0.0:{port}/")
-    print(f"  WebSocket         ->  ws://0.0.0.0:{port}/ws")
-    print(f"  Android emulator  ->  use 10.0.2.2 instead of localhost")
+    print(f"  SLT WebSocket       ->  ws://0.0.0.0:{port}/slt/v1/ws")
+    print(f"  Android emulator    ->  use 10.0.2.2 instead of localhost")
     print(f"{'='*60}\n")
     uvicorn.run(app, host="0.0.0.0", port=port)

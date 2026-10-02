@@ -4,21 +4,21 @@ backend's full lifecycle, on a single freshly generated throwaway
 account:
 
     1.  Generate unique email/password
-    2.  POST /register
-    3.  POST /login                          -> JWT #1
-    4.  POST /forgot-password
-    5.  POST /update-password (using JWT #1)
+    2.  POST /auth/register
+    3.  POST /auth/login                          -> JWT #1
+    4.  POST /auth/forgot-password
+    5.  POST /auth/update-password (using JWT #1)
     6.  Continue using JWT #1:
-    7.      GET  /history
-    8.      POST /history/store
-    9.      GET  /history
-    10.     DELETE /history/{id}
-    11.     POST /history/store x2
-    12.     DELETE /history/clear
-    13. POST /logout                          (revokes JWT #1)
+    7.      GET  /me/history
+    8.      POST /me/history
+    9.      GET  /me/history
+    10.     DELETE /me/history/{id}
+    11.     POST /me/history x2
+    12.     DELETE /me/history
+    13. POST /auth/logout                          (revokes JWT #1)
     14. Verify JWT #1 is rejected
-    15. POST /login using the NEW password    -> JWT #2
-    16. WebSocket /slt/ws using JWT #2
+    15. POST /auth/login using the NEW password    -> JWT #2
+    16. WebSocket /slt/v1/ws using JWT #2
     17.     Send frames
     18.     Receive translation
     19.     Close WebSocket
@@ -47,22 +47,41 @@ from __future__ import annotations
 
 import asyncio
 
-from base import LiveTestCase
-from live_config import WS_URL, unique_email
-from live_helpers import (
-    LiveTestState,
-    assert_token_rejected,
-    clear_history,
-    delete_translation,
-    forgot_password,
-    get_history,
-    login,
-    logout,
-    register,
-    store_translation,
-    update_password,
-)
-from test_slt_websocket import run_slt_session
+try:
+    from base import LiveTestCase
+    from live_config import WS_URL, unique_email
+    from live_helpers import (
+        LiveTestState,
+        assert_token_rejected,
+        clear_history,
+        delete_translation,
+        forgot_password,
+        get_history,
+        login,
+        logout,
+        register,
+        store_translation,
+        update_password,
+    )
+    from test_slt_websocket import run_slt_session
+except ImportError:
+    from tests.live.base import LiveTestCase
+    from tests.live.live_config import WS_URL, unique_email
+    from tests.live.live_helpers import (
+        LiveTestState,
+        assert_token_rejected,
+        clear_history,
+        delete_translation,
+        forgot_password,
+        get_history,
+        login,
+        logout,
+        register,
+        store_translation,
+        update_password,
+    )
+    from tests.live.test_slt_websocket import run_slt_session
+
 
 
 class TestLiveE2E(LiveTestCase):
@@ -143,7 +162,7 @@ class TestLiveE2E(LiveTestCase):
         # run_slt_session closes the socket on the way out).
         frame_files = sorted(frames_dir.glob("frame_*.jpg"))
         frames_sent, predictions, complete = asyncio.run(
-            run_slt_session(WS_URL, state.new_token, frame_files)
+            run_slt_session(WS_URL, state.new_token, frame_files, frame_interval=0.09)
         )
 
         self.assertEqual(complete["frames"], frames_sent)
@@ -171,9 +190,9 @@ class TestLiveAuthEdgeCases(LiveTestCase):
 
     def test_protected_routes_reject_missing_token(self):
         cases = [
-            ("GET", "/history", {}),
-            ("POST", "/history/store", {"json": {"translation": "x"}}),
-            ("POST", "/update-password", {"json": {"password": "irrelevant123"}}),
+            ("GET", "/me/history", {}),
+            ("POST", "/me/history", {"json": {"translation": "x"}}),
+            ("POST", "/auth/update-password", {"json": {"password": "irrelevant123"}}),
         ]
         for method, path, kwargs in cases:
             with self.subTest(route=f"{method} {path}"):
@@ -186,7 +205,7 @@ class TestLiveAuthEdgeCases(LiveTestCase):
         email = unique_email()
         register(self.client, email, "s3cr3t-register")
         resp = self.client.post(
-            "/login", json={"email": email, "password": "definitely-wrong-pw"}
+            "/auth/login", json={"email": email, "password": "definitely-wrong-pw"}
         )
         self.assertEqual(resp.status_code, 400)
         body = resp.json()
@@ -198,7 +217,7 @@ class TestLiveAuthEdgeCases(LiveTestCase):
         email = unique_email()
         register(self.client, email, "s3cr3t-register")
         resp = self.client.post(
-            "/register", json={"email": email, "password": "s3cr3t-register"}
+            "/auth/register", json={"email": email, "password": "s3cr3t-register"}
         )
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"], "Registration failed")

@@ -37,7 +37,7 @@ LiveTestCase` etc.)
 |---|---|---|
 | `SIGNBRIDGE_RUN_LIVE_TESTS` | Set to `1` to actually run this suite; otherwise every test is skipped (see `base.LiveTestCase`) | unset |
 | `SIGNBRIDGE_LIVE_BASE_URL` | REST base URL | `http://127.0.0.1:5000` |
-| `SIGNBRIDGE_LIVE_WS_URL` | WebSocket URL | derived from base URL, path `/slt/ws` |
+| `SIGNBRIDGE_LIVE_WS_URL` | WebSocket URL | derived from base URL, path `/slt/v1/ws` |
 | `SIGNBRIDGE_LIVE_FRAMES_DIR` | Directory of `frame_*.jpg` files for the SLT websocket step | `<repo>/temp/frames` |
 | `SIGNBRIDGE_LIVE_TIMEOUT` | Per-request HTTP timeout, seconds | `15` |
 
@@ -48,8 +48,8 @@ No account credentials are configured here - see above.
 - `live_config.py` — env var reading (loads `tests/live/.env.live.example` via `python-dotenv` if present), the `RUN_LIVE` opt-in flag, `BASE_URL`/`WS_URL`, `frames_dir()`, `unique_email()`.
 - `base.py` — `LiveTestCase`, the common base class every test subclasses. Carries the `@unittest.skipUnless(RUN_LIVE, ...)` gate (inherited by every subclass), a `LiveClient` HTTP wrapper set up in `setUp`, and `require_frames_dir()`, which turns a missing/empty frames dir into `self.skipTest(...)` instead of a hard failure.
 - `live_helpers.py` — plain (non-test) functions for each API call plus its immediate assertions, and `LiveTestState`, the dataclass threaded through the scenario (`email`/`password`/`new_password` set up front; `token`/`old_token`/`new_token`/`uid`/`history_id` filled in as it runs).
-- `test_slt_websocket.py` — no longer a standalone test. Exports `run_slt_session(ws_url, token, frame_files)`, an async helper that does the `/slt/ws` handshake, streams frames, and returns the result - used as the final stage of `test_live_e2e.py`'s single scenario, authenticated with the same account's JWT #2. (unittest will still import this module during discovery; it just finds no tests in it, which is harmless.)
-- `test_live_e2e.py` — `TestLiveE2E.test_complete_live_backend_flow`: the full 19-step lifecycle (register → login → forgot/update-password → history CRUD → logout → revocation check → re-login → SLT websocket) as one test method, since TestCase methods shouldn't depend on each other's order; plus `TestLiveAuthEdgeCases` for a few standalone, order-independent auth tests, each registering its own throwaway account.
+- `test_slt_websocket.py` — no longer a standalone test. Exports `run_slt_session(ws_url, token, frame_files)`, an async helper that does the `/slt/v1/ws` handshake, streams frames, and returns the result - used as the final stage of `test_live_e2e.py`'s single scenario, authenticated with the same account's JWT #2. (unittest will still import this module during discovery; it just finds no tests in it, which is harmless.)
+- `test_live_e2e.py` — `TestLiveE2E.test_complete_live_backend_flow`: the full 19-step lifecycle (register → login → forgot/auth/update-password → history CRUD → logout → revocation check → re-login → SLT websocket) as one test method, since TestCase methods shouldn't depend on each other's order; plus `TestLiveAuthEdgeCases` for a few standalone, order-independent auth tests, each registering its own throwaway account.
 
 ## Notes
 

@@ -43,7 +43,7 @@ void main() {
 
       expect(result, {'id': 'uid1', 'token': 'tok1'});
       expect(captured.method, 'POST');
-      expect(captured.url.path, '/login');
+      expect(captured.url.path, '/auth/login');
       expect(captured.headers['Content-Type'], 'application/json');
       expect(
         jsonDecode(captured.body),
@@ -89,7 +89,7 @@ void main() {
 
       expect(result, {'id': 'uid1', 'token': 'tok1'});
       expect(captured.method, 'POST');
-      expect(captured.url.path, '/register');
+      expect(captured.url.path, '/auth/register');
       expect(captured.headers['Content-Type'], 'application/json');
       expect(
         jsonDecode(captured.body),
@@ -130,7 +130,7 @@ void main() {
   });
 
     group('logout', () {
-    test('sends POST to /logout with bearer token', () async {
+    test('sends POST to /auth/logout with bearer token', () async {
       late http.Request captured;
 
       await _run(
@@ -142,7 +142,7 @@ void main() {
       );
 
       expect(captured.method, 'POST');
-      expect(captured.url.path, '/logout');
+      expect(captured.url.path, '/auth/logout');
       expect(captured.headers['Authorization'], 'Bearer tok');
       expect(captured.headers['Content-Type'], 'application/json');
     });
@@ -180,7 +180,7 @@ void main() {
           return http.Response('{"success":true}', 200);
         },
       );
-      expect(captured.url.path, '/forgot-password');
+      expect(captured.url.path, '/auth/forgot-password');
       expect(captured.method, 'POST');
     });
 
@@ -242,7 +242,7 @@ void main() {
 
       expect(result, isTrue);
       expect(captured.method, 'POST');
-      expect(captured.url.path, '/update-password');
+      expect(captured.url.path, '/auth/update-password');
       expect(captured.headers['Authorization'], 'Bearer tok');
       expect(captured.headers['Content-Type'], 'application/json');
       expect(
@@ -317,7 +317,7 @@ void main() {
       );
 
       expect(captured.method, 'GET');
-      expect(captured.url.path, '/history');
+      expect(captured.url.path, '/me/history');
       expect(captured.headers['Authorization'], 'Bearer tok');
       expect(result, [
         {'id': '1', 'translation': 'hello', 'timestamp': '2025-01-01'},
@@ -393,7 +393,7 @@ void main() {
       );
 
       expect(captured.method, 'POST');
-      expect(captured.url.path, '/history/store');
+      expect(captured.url.path, '/me/history');
       expect(captured.headers['Authorization'], 'Bearer tok');
       expect(captured.headers['Content-Type'], 'application/json');
       expect(jsonDecode(captured.body), {'translation': 'hello'});
@@ -468,7 +468,7 @@ void main() {
   });
 
   group('deleteHistoryItem', () {
-    test('sends DELETE to /history/<id> with bearer token', () async {
+    test('sends DELETE to /me/history/<id> with bearer token', () async {
       late http.Request captured;
       await _run(
         () => ApiService.deleteHistoryItem('item123', 'tok'),
@@ -479,7 +479,7 @@ void main() {
       );
 
       expect(captured.method, 'DELETE');
-      expect(captured.url.path, '/history/item123');
+      expect(captured.url.path, '/me/history/item123');
       expect(captured.headers['Authorization'], 'Bearer tok');
     });
 
@@ -509,7 +509,7 @@ void main() {
   });
 
   group('clearHistory', () {
-    test('sends DELETE to /history/clear with bearer token', () async {
+    test('sends DELETE to /me/history with bearer token', () async {
       late http.Request captured;
       await _run(
         () => ApiService.clearHistory('tok'),
@@ -520,7 +520,7 @@ void main() {
       );
 
       expect(captured.method, 'DELETE');
-      expect(captured.url.path, '/history/clear');
+      expect(captured.url.path, '/me/history');
       expect(captured.headers['Authorization'], 'Bearer tok');
     });
 

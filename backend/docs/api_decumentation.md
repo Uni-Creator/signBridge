@@ -50,9 +50,9 @@
 **SignBridge** is a Python backend, now built on **FastAPI**, that provides:
 
 - **REST APIs** for user authentication (Firebase) and translation history (Firebase Realtime Database).
+  - **`/slp/v1/produce`** — Sign Language **Production**: reserved for the text-to-3D-pose-sequence pipeline (endpoints currently stubbed).
 - **WebSocket APIs** for real-time Indian Sign Language (ISL) work, split into two namespaces:
-  - **`/slt/ws`** — Sign Language **Translation**: client streams camera frames, server returns predicted sign labels.
-  - **`/slp/ws`** — Sign Language **Production**: reserved for the text-to-3D-pose-sequence pipeline (endpoints currently stubbed).
+  - **`/slt/v1/ws`** — Sign Language **Translation**: client streams camera frames, server returns predicted sign labels.
 
 The backend is built with:
 
@@ -66,11 +66,11 @@ The backend is built with:
 | ML pipeline | MediaPipe 0.10 + remote ISL model API |
 | Runtime | Python 3.10–3.12 |
 
-> **Migration note:** the backend has moved from Flask + flask-sock + flask-limiter to FastAPI + native ASGI WebSockets + SlowAPI. The live-translation WebSocket route has moved from `/ws` to `/slt/ws`, and WebSocket authentication has moved from a query-string token to an `Authorization: Bearer` header sent during the handshake.
+> **Migration note:** the backend has moved from Flask + flask-sock + flask-limiter to FastAPI + native ASGI WebSockets + SlowAPI. The live-translation WebSocket route has moved from `/ws` to `/slt/v1/ws`, and WebSocket authentication has moved from a query-string token to an `Authorization: Bearer` header sent during the handshake.
 
 ---
 
-## Base URLs & Collection Variables
+## Base URLs & Collection Variables 
 
 | Context | REST base URL | WebSocket base URL |
 |---|---|---|
@@ -138,19 +138,19 @@ Per-endpoint overrides:
 | `GET /` | 20 / min | `Too many requests. Please try again later.` |
 | `GET /health` | 10 / min | `Too many requests. Please try again later.` |
 | `GET /health/deep` | 5 / min | `Too many requests. Please try again later.` |
-| `POST /register` | 5 / min | `Too many registration attempts. Please try again later.` |
-| `POST /login` | 5 / min | `Too many login attempts. Please try again later.` |
-| `POST /logout` | 10 / min | `Too many logout requests. Please try again later.` |
-| `POST /forgot-password` | 3 / min | `Too many forgot password attempts. Please try again later.` |
-| `POST /update-password` | 3 / min | `Too many password update attempts. Please try again later.` |
-| `GET /history` | 20 / min | `Too many history requests. Please try again later.` |
-| `POST /history/store` | 50 / min | `Too many store requests. Please try again later.` |
-| `DELETE /history/<id>` | 50 / min | `Too many delete history requests. Please try again later.` |
-| `DELETE /history/clear` | 10 / min | `Too many clear requests. Please try again later.` |
-| `GET /slt/health` | 5 / min | `Too many model requests. Please try again later.` |
-| `GET /slt/health/deep` | 5 / min | `Too many model requests. Please try again later.` |
-| `GET /slp/health` | 5 / min | `Too many model requests. Please try again later.` |
-| `GET /slp/health/deep` | 5 / min | `Too many model requests. Please try again later.` |
+| `POST /auth/register` | 5 / min | `Too many registration attempts. Please try again later.` |
+| `POST /auth/login` | 5 / min | `Too many login attempts. Please try again later.` |
+| `POST /auth/logout` | 10 / min | `Too many logout requests. Please try again later.` |
+| `POST /auth/forgot-password` | 3 / min | `Too many forgot password attempts. Please try again later.` |
+| `POST /auth/update-password` | 3 / min | `Too many password update attempts. Please try again later.` |
+| `GET /{user_id}/history` | 20 / min | `Too many history requests. Please try again later.` |
+| `POST /{user_id}/history/store` | 50 / min | `Too many store requests. Please try again later.` |
+| `DELETE /{user_id}/history/<id>` | 50 / min | `Too many delete history requests. Please try again later.` |
+| `DELETE /{user_id}/history/clear` | 10 / min | `Too many clear requests. Please try again later.` |
+| `GET /slt/v1/health` | 5 / min | `Too many model requests. Please try again later.` |
+| `GET /slt/v1/health/deep` | 5 / min | `Too many model requests. Please try again later.` |
+| `GET /slp/v1/health` | 5 / min | `Too many model requests. Please try again later.` |
+| `GET /slp/v1/health/deep` | 5 / min | `Too many model requests. Please try again later.` |
 
 When a limit is exceeded the server returns:
 
@@ -269,7 +269,7 @@ Checks both the Firebase-backed database and the remote ISL model server, and re
 **Collection request:** `register`
 
 ```
-POST /register
+POST /auth/register
 ```
 
 Creates a new Firebase user account and returns a Firebase ID token.
@@ -348,7 +348,7 @@ Extra fields are rejected (`extra="forbid"`).
 **Collection request:** `login`
 
 ```
-POST /login
+POST /auth/login
 ```
 
 Authenticates an existing Firebase user and returns a fresh ID token.
@@ -411,7 +411,7 @@ Authenticates an existing Firebase user and returns a fresh ID token.
 **Collection request:** `logout`
 
 ```
-POST /logout
+POST /auth/logout
 ```
 
 Revokes all refresh tokens for the authenticated user (Firebase Admin `revoke_refresh_tokens`). Existing ID tokens remain valid until they expire (typically 1 hour).
@@ -457,7 +457,7 @@ Revokes all refresh tokens for the authenticated user (Firebase Admin `revoke_re
 **Collection request:** `forgot-password`
 
 ```
-POST /forgot-password
+POST /auth/forgot-password
 ```
 
 Sends a Firebase password-reset email to the given address. The endpoint always returns a success response regardless of whether the email exists, to prevent account enumeration.
@@ -505,7 +505,7 @@ Sends a Firebase password-reset email to the given address. The endpoint always 
 **Collection request:** `update-password`
 
 ```
-POST /update-password
+POST /auth/update-password
 ```
 
 Updates the password for the authenticated user (Firebase Admin `update_user`), then revokes existing refresh tokens.
@@ -564,7 +564,7 @@ Updates the password for the authenticated user (Firebase Admin `update_user`), 
 **Collection request:** `get history`
 
 ```
-GET /history
+GET /{user_id}/history
 ```
 
 Returns the authenticated user's translation history, sorted newest-first.
@@ -624,7 +624,7 @@ Returns the authenticated user's translation history, sorted newest-first.
 **Collection request:** `store translation`
 
 ```
-POST /history/store
+POST /{user_id}/history/store
 ```
 
 Saves a translation string to the authenticated user's history in Firebase Realtime Database.
@@ -692,7 +692,7 @@ Saves a translation string to the authenticated user's history in Firebase Realt
 **Collection request:** `delete translation`
 
 ```
-DELETE /history/{{translation_id}}
+DELETE /{user_id}/history/{{translation_id}}
 ```
 
 Deletes a single translation item from the authenticated user's history.
@@ -744,7 +744,7 @@ Deletes a single translation item from the authenticated user's history.
 **Collection request:** `clear history`
 
 ```
-DELETE /history/clear
+DELETE /{user_id}/history/clear
 ```
 
 Deletes **all** translation history for the authenticated user.
@@ -788,15 +788,15 @@ Deletes **all** translation history for the authenticated user.
 ### 13. SLT Health / Deep Health
 
 ```
-GET /slt/health
-GET /slt/health/deep
+GET /slt/v1/health
+GET /slt/v1/health/deep
 ```
 
 Health checks for the sign-language-**translation** (SLT) remote model server. Both require authentication.
 
 **Authentication:** Required — Bearer token.
 
-**`GET /slt/health` — Response: 200 OK**
+**`GET /slt/v1/health` — Response: 200 OK**
 
 ```json
 {
@@ -805,7 +805,7 @@ Health checks for the sign-language-**translation** (SLT) remote model server. B
 }
 ```
 
-**`GET /slt/health` — Response: 503 Service Unavailable**
+**`GET /slt/v1/health` — Response: 503 Service Unavailable**
 
 ```json
 {
@@ -813,11 +813,11 @@ Health checks for the sign-language-**translation** (SLT) remote model server. B
 }
 ```
 
-**`GET /slt/health/deep` — Response: 200 OK**
+**`GET /slt/v1/health/deep` — Response: 200 OK**
 
 Returns the full deep-health payload from the remote ISL model API, including model, input, inference, memory, GPU, and runtime details.
 
-**`GET /slt/health/deep` — Response: 503 Service Unavailable**
+**`GET /slt/v1/health/deep` — Response: 503 Service Unavailable**
 
 ```json
 {
@@ -842,7 +842,7 @@ Placeholders for the sign-language-**production** (SLP) pipeline's model health 
 
 ## WebSocket API: Live Translation (SLT)
 
-**Endpoint:** `WS /slt/ws` *(moved from `/ws`)*
+**Endpoint:** `WS /slt/v1/ws` *(moved from `/ws`)*
 
 The live translation API uses a native FastAPI WebSocket connection. Authentication is performed once during the WebSocket handshake, via the `require_ws_auth` dependency. After successful authentication, the server receives frames, processes them through the MediaPipe/SLT pipeline, and returns predictions.
 
@@ -850,10 +850,10 @@ The live translation API uses a native FastAPI WebSocket connection. Authenticat
 
 ```text
 Local:
-ws://localhost:5000/slt/ws
+ws://localhost:5000/slt/v1/ws
 
 Production:
-wss://<render-host>/slt/ws
+wss://<render-host>/slt/v1/ws
 ```
 
 The client must send the Firebase ID token as a header during the handshake:
@@ -1068,7 +1068,7 @@ Flutter
    │
    │ WebSocket / WSS  (Authorization: Bearer <token> at handshake)
    ▼
-FastAPI /slt/ws
+FastAPI /slt/v1/ws
    │
    ├── jpeg_binary / json_base64 decoding
    │
@@ -1080,6 +1080,194 @@ FastAPI /slt/ws
           ▼
    Remote ISL Model API  (/predict_frames_bin)
 ```
+
+### Sliding-Window Inference Behavior
+
+The live translation pipeline uses a 16-frame inference window with a stride of 6 frames.
+
+This means:
+
+- The first inference uses frames `1–16`.
+- After the first inference, the backend retains the last 10 frames.
+- The next 6 newly accepted frames are appended.
+- The next inference therefore uses frames `7–22`.
+- Subsequent windows continue in the same manner.
+
+Example:
+
+```text
+Inference #0:
+[ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 ]
+
+Inference #1:
+[ 7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 ]
+
+Inference #2:
+[13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 ]
+```
+
+Therefore, consecutive inference windows contain:
+
+- `16` frames per model input.
+- `6` new frames per inference.
+- `10` overlapping frames.
+- `62.5%` temporal overlap between consecutive windows.
+- `37.5%` of each new inference window consists of newly received frames.
+
+The overlap is intentional because the ISL recognition model operates on a temporal clip of 16 frames while the backend provides more frequent predictions than waiting for another completely independent 16-frame clip.
+
+### Inference Concurrency
+
+Inference jobs are submitted to a dedicated inference executor and are bounded by:
+
+```text
+MAX_CONCURRENT_INFERENCES = 2
+```
+
+Completed inference results are returned to the client in sequence order, even if a later inference finishes before an earlier one.
+
+The backend therefore separates:
+
+1. Frame reception.
+2. Frame preprocessing.
+3. Sliding-window construction.
+4. Model inference.
+5. Ordered result delivery.
+
+### Model Inference Performance
+
+The remote ISL model API was benchmarked using the `/predict_frames_bin` endpoint with:
+
+- Model: Swin3D-S.
+- Input: 16 frames.
+- Resolution: 224 × 224.
+- CUDA GPU inference.
+- FP16 inference.
+- `torch.compile` enabled.
+- ISLF binary frame transport.
+
+Representative steady-state model-server measurements:
+
+| Stage | Typical latency |
+|---|---:|
+| Model forward pass | ~50 ms |
+| Softmax | ~0.1–0.2 ms |
+| Top-k selection | ~0.1 ms |
+| Model inference total | ~50 ms |
+| Frame preprocessing | ~4–5 ms |
+| Total model-server request | ~55 ms |
+
+The first request after model startup can be substantially slower because of model compilation and graph specialization. A measured first request was approximately 2.9 seconds and should not be treated as steady-state inference latency.
+
+### Backend → Model API Latency
+
+Backend integration testing showed that the backend-to-model round trip is approximately:
+
+```text
+CUDA:
+~57–68 ms per 16-frame inference
+```
+
+This includes the backend request to the remote model API and the returned prediction.
+
+The measured backend latency is consistent with the model-server measurements of approximately 55 ms, indicating that the backend/model communication and request handling currently add relatively little overhead.
+
+CPU inference was also tested:
+
+```text
+CPU:
+~839–878 ms per 16-frame inference
+```
+
+The CUDA path is therefore substantially faster for the current Swin3D-S configuration.
+
+### Important Benchmarking Note
+
+Manual Postman frame submission must not be used to estimate real-time frame rate or prediction cadence.
+
+During Postman testing, individual frames were submitted manually, producing large and irregular gaps between received frames. Those gaps represent human/test-client behavior rather than backend or model latency.
+
+The meaningful performance measurements from such a test are the actual inference execution times:
+
+```text
+Frame window assembled
+        ↓
+Backend → Model API
+        ↓
+Model inference
+        ↓
+Model API → Backend
+```
+
+The time between manually submitted WebSocket frames should therefore be excluded from real-time throughput calculations.
+
+A proper real-time benchmark should use a continuous frame source at the intended client frame rate and measure:
+
+```text
+Frame capture
+    ↓
+JPEG encoding
+    ↓
+WebSocket transmission
+    ↓
+Backend frame reception
+    ↓
+Frame preprocessing
+    ↓
+16-frame window formation
+    ↓
+Backend → Model API
+    ↓
+GPU inference
+    ↓
+Prediction response
+    ↓
+WebSocket response to client
+```
+
+### Current Performance Interpretation
+
+The current CUDA model inference latency is not the limiting factor for a normal real-time streaming pipeline.
+
+At approximately 55–68 ms per inference, the model has sufficient processing headroom for the current 6-frame stride under typical camera frame rates.
+
+For example, at 30 FPS:
+
+```text
+6 frames / 30 FPS = 200 ms
+```
+
+Approximately 200 ms of new video arrives between inference triggers, while the model-server inference requires approximately 55 ms.
+
+At 60 FPS:
+
+```text
+6 frames / 60 FPS = 100 ms
+```
+
+The approximately 55 ms model inference still fits within the 100 ms interval, leaving approximately 45 ms before accounting for the rest of the end-to-end pipeline.
+
+These calculations describe model/backend processing capacity only. Actual user-perceived latency also depends on camera capture, JPEG encoding, network transmission, backend processing, buffering, and client-side rendering.
+
+### Recommended Production Benchmark
+
+For final real-time performance evaluation, benchmark the complete pipeline using a continuous camera stream rather than manual Postman submission.
+
+Record at least 50–100 consecutive inference windows and report:
+
+- Mean latency.
+- Median / P50.
+- P90.
+- P95.
+- P99.
+- Minimum and maximum latency.
+- Actual input FPS.
+- Actual inference frequency.
+- Number of dropped frames.
+- Number of queued/in-flight inference jobs.
+- End-to-end client-perceived latency.
+
+The first inference after model startup/compilation should be reported separately from steady-state measurements.
 
 ### Prediction Response (Server → Client)
 
@@ -1198,9 +1386,9 @@ with up to 2 retries on `503` (model warming up), a 15-second timeout, and a `/p
 
 ## WebSocket API: Sign Production (SLP)
 
-**Endpoint:** `WS /slp/ws`
+**Endpoint:** `WS /slt/v1/ws`
 
-Reserved for the text-to-3D-pose-sequence sign production pipeline. Uses the same `require_ws_auth` handshake (Authorization header, Firebase ID token) as `/slt/ws`. **Not yet implemented** — the route and its `GET /slp/health` / `GET /slp/health/deep` companions currently exist as stub handlers with no behavior.
+Reserved for the text-to-3D-pose-sequence sign production pipeline. Uses the same `require_ws_auth` handshake (Authorization header, Firebase ID token) as `/slt/v1/ws`. **Not yet implemented** — the route and its `GET /slp/health` / `GET /slp/health/deep` companions currently exist as stub handlers with no behavior.
 
 ---
 
@@ -1221,31 +1409,31 @@ In the `sign_bridge` collection, set:
 
 ### Step 2: Register a new account
 
-Send **`POST /register`**.
+Send **`POST /auth/register`**.
 
 On success `{{user_id}}` and `{{auth_token}}` are set automatically by the collection script.
 
 ### Step 3: (Optional) Log in with an existing account
 
-Send **`POST /login`** if you already have an account. This also sets `{{auth_token}}`.
+Send **`POST /auth/login`** if you already have an account. This also sets `{{auth_token}}`.
 
 ### Step 4: Store a translation
 
-Set `{{translation}}` to `"hello"` (include quotes), then send **`POST /history/store`**.
+Set `{{translation}}` to `"hello"` (include quotes), then send **`POST /{user_id}/history/store`**.
 
 `{{translation_id}}` is set automatically.
 
 ### Step 5: Retrieve history
 
-Send **`GET /history`** to confirm the stored item appears.
+Send **`GET /{user_id}/history`** to confirm the stored item appears.
 
 ### Step 6: Delete the translation
 
-Send **`DELETE /history/{{translation_id}}`** to remove the item.
+Send **`DELETE /{user_id}/history/{{translation_id}}`** to remove the item.
 
 ### Step 7: Connect to the WebSocket
 
-Open the **`live translation`** WebSocket request. The URL is now **`{{live_url}}/slt/ws`** *(no `token` query parameter)*, and the request must set an `Authorization: Bearer {{auth_token}}` header on the handshake instead.
+Open the **`live translation`** WebSocket request. The URL is now **`{{live_url}}/slt/v1/ws`** *(no `token` query parameter)*, and the request must set an `Authorization: Bearer {{auth_token}}` header on the handshake instead.
 
 Click **Connect**. You should receive:
 
@@ -1277,7 +1465,10 @@ For `json_base64`, send Base64-encoded camera frames using:
 
 For `jpeg_binary`, send raw JPEG bytes as a binary WebSocket message.
 
-After every 16 accepted frames (with 6-frame stride thereafter) the server returns a prediction:
+After the first 16 accepted frames, the server performs an inference.
+For each subsequent inference, the server retains the previous 10 frames
+and waits for 6 new accepted frames before constructing the next 16-frame
+sliding window. When a window completes, the server returns a prediction:
 
 ```json
 {"label": "hello", "confidence": 0.92, "sequence": 0}
@@ -1289,11 +1480,11 @@ Send `{"type": "end"}` to flush the final window and receive a `"status": "compl
 
 ### Step 11: Update password (optional)
 
-Set `{{new_pass}}` to `"newPassword456"` (with quotes), then send **`POST /update-password`**.
+Set `{{new_pass}}` to `"newPassword456"` (with quotes), then send **`POST /auth/update-password`**.
 
 ### Step 12: Log out
 
-Send **`POST /logout`** to revoke refresh tokens.
+Send **`POST /auth/logout`** to revoke refresh tokens.
 
 ---
 
@@ -1335,7 +1526,7 @@ The `sign_bridge` collection defines the following variables (all start empty: s
 | HTTPS / WSS | Deployment-dependent; Render provides TLS for public endpoints |
 | Firebase Database Rules | Not verified in this documentation |
 | Distributed rate-limit storage | Not verified in this documentation |
-| SLP endpoints (`/slp/health`, `/slp/ws`) | ⚠️ Stubbed, not yet implemented, do not rely on them |
+| SLT endpoints (`/slt/v1/health`, `/slt/v1/ws`) | ⚠️ Stubbed, not yet implemented, do not rely on them |
 
 ### Transport Security
 
@@ -1348,7 +1539,7 @@ Flutter
   │
   │ WSS + Authorization: Bearer <Firebase ID token> (at handshake)
   ▼
-Render / FastAPI /slt/ws
+Render / FastAPI /slt/v1/ws
 ```
 
 Use `wss://` in production. TLS protects frames and the Firebase token while they are in transit.
@@ -1400,10 +1591,10 @@ REST:
 http://127.0.0.1:5000
 
 WebSocket (translation):
-ws://127.0.0.1:5000/slt/ws
+ws://127.0.0.1:5000/slt/v1/ws
 
 WebSocket (production, stubbed):
-ws://127.0.0.1:5000/slp/ws
+ws://127.0.0.1:5000/slt/v1/ws
 
 Health:
 http://127.0.0.1:5000/health
@@ -1434,17 +1625,17 @@ The basic health endpoint should be preferred for platform/container health chec
 ### SLT Endpoints
 
 ```text
-GET  /slt/health
-GET  /slt/health/deep
-WS   /slt/ws
+GET  /slt/v1/health
+GET  /slt/v1/health/deep
+WS   /slt/v1/ws
 ```
 
 ### SLP Endpoints
 
 ```text
-GET  /slp/health         (stub)
-GET  /slp/health/deep    (stub)
-WS   /slp/ws             (stub)
+GET  /slp/v1/health         (stub)
+GET  /slp/v1/health/deep    (stub)
+WS   /slp/v1/produce             (stub)
 ```
 
 ### Tests
