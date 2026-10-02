@@ -134,11 +134,7 @@ flowchart TD
 
 # Demo
 
-Add the project demonstration video here:
-
-```text
 https://github.com/user-attachments/assets/130351a1-b1d9-4432-a4a4-7e64ee8ec296
-```
 
 ---
 
