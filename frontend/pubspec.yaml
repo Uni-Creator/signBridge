@@ -20,7 +20,7 @@ dependencies:
   # Networking
   http: ^1.2.1
   web_socket_channel: ^3.0.1
-  connectivity_plus: ^7.3.1
+  connectivity_plus: ^7.3.2
   
   # Permissions
   permission_handler: ^13.0.2
@@ -36,7 +36,7 @@ dependencies:
   flutter_dotenv: ^6.0.1
 
 dev_dependencies:
-  camera_platform_interface: ^2.13.1
+  camera_platform_interface: ^2.14.0
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
