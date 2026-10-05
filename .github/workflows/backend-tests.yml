@@ -19,11 +19,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    
       # Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
-
 
       # Python
       - name: Set up Python
@@ -41,17 +39,9 @@ jobs:
       # Dependencies
       - name: Install dependencies
         working-directory: backend
-        run: |
-          uv sync --frozen
+        run: uv sync --frozen
 
-      # Regression tests
-      #
-      # Runs on:
-      #   - pull_request
-      #   - push to main
-      #
-      # Does NOT require secrets.
-
+      # Regression tests (no secrets required)
       - name: Run regression tests
         working-directory: backend
         run: |
@@ -59,12 +49,7 @@ jobs:
             -s tests/regression \
             -v
 
-      # LIVE TESTS
-      #
-      # Only run on trusted pushes to main.
-      # Fork PRs cannot access repository secrets.
-
-      # Firebase configuration
+      # Firebase configuration (trusted pushes to main only)
       - name: Create Firebase configuration
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: backend
@@ -88,18 +73,24 @@ jobs:
           printf '%s' "$FIREBASE_ADMIN_JSON" > firebase-admin.json
 
           echo "Validating Firebase configuration..."
-
           python -m json.tool firebase.json > /dev/null
           python -m json.tool firebase-admin.json > /dev/null
 
           echo "Firebase configuration created successfully."
 
-      # Start backend server locally
+      # Start backend server (admin API key optional)
       - name: Start backend server
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: backend
+        env:
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
         run: |
           set -euo pipefail
+
+          if [ -z "${ADMIN_API_KEY:-}" ]; then
+            echo "WARNING: ADMIN_API_KEY secret is unavailable."
+            echo "Continuing without the admin API key."
+          fi
 
           uv run uvicorn app.main:app \
             --host 127.0.0.1 \
@@ -138,20 +129,23 @@ jobs:
 
           echo "ERROR: Backend server failed to become ready."
 
-          echo "=== Backend log ==="
           if [ -f server.log ]; then
+            echo "=== Backend log ==="
             cat server.log
           fi
 
           exit 1
 
-      # Live tests
+      # Live tests (admin API key optional)
       - name: Run live tests
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: backend
         env:
           SIGNBRIDGE_RUN_LIVE_TESTS: "1"
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
         run: |
+          set -euo pipefail
+
           uv run python -m unittest discover \
             -s tests/live \
             -v
@@ -167,7 +161,6 @@ jobs:
           else
             echo "No backend log found."
           fi
-
 
       # Stop backend server
       - name: Stop backend server

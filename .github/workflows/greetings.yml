@@ -6,29 +6,69 @@ on:
   issues:
     types: [opened]
 
+permissions:
+  issues: write
+  pull-requests: write
+
 jobs:
-  greeting:
+  greet-first-pr:
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
-
-    permissions:
-      issues: write
-      pull-requests: write
-
     steps:
-      - uses: actions/first-interaction@v3.1.0
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Greet first-time PR authors
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
 
-          issue_message: |
-            Thanks for opening your first issue in SignBridge!
+          # Count this author's PRs (open, closed, merged), excluding the current one
+          others=$(gh pr list --state all --author "$AUTHOR" --limit 100 \
+            --json number \
+            --jq "[.[] | select(.number != $NUMBER)] | length")
 
-            We appreciate you taking the time to report a bug, suggest an improvement, or share feedback.
+          if [ "$others" -gt 0 ]; then
+            echo "$AUTHOR already has $others earlier PR(s). Skipping greeting."
+            exit 0
+          fi
 
-            Please provide as much relevant information as possible so we can investigate it effectively.
+          gh pr comment "$NUMBER" --body-file - <<'EOF'
+          Thanks for opening your first pull request to SignBridge!
 
-          pr_message: |
-            Thanks for opening your first pull request to SignBridge!
+          We appreciate your contribution. Please keep your changes focused and include relevant tests where applicable.
 
-            We appreciate your contribution to the project. Please make sure your changes are focused and include relevant tests where applicable.
+          We'll review your PR as soon as possible. Thanks for contributing!
+          EOF
 
-            We'll review your PR as soon as possible. Thanks for contributing to SignBridge!
+  greet-first-issue:
+    if: github.event_name == 'issues' && github.event.issue.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Greet first-time issue authors
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          # `gh issue list` only returns issues, not PRs
+          others=$(gh issue list --state all --author "$AUTHOR" --limit 100 \
+            --json number \
+            --jq "[.[] | select(.number != $NUMBER)] | length")
+
+          if [ "$others" -gt 0 ]; then
+            echo "$AUTHOR already has $others earlier issue(s). Skipping greeting."
+            exit 0
+          fi
+
+          gh issue comment "$NUMBER" --body-file - <<'EOF'
+          Thanks for opening your first issue in SignBridge!
+
+          We appreciate you taking the time to report a bug, suggest an improvement, or share feedback.
+
+          Please provide as much relevant information as possible so we can investigate it effectively.
+          EOF
