@@ -19,94 +19,161 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    
+      # Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
+      # Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      # uv
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
           cache-dependency-glob: "backend/uv.lock"
 
+      # Dependencies
       - name: Install dependencies
         working-directory: backend
-        run: uv sync --frozen
+        run: |
+          uv sync --frozen
+
+      # Regression tests
+      #
+      # Runs on:
+      #   - pull_request
+      #   - push to main
+      #
+      # Does NOT require secrets.
 
       - name: Run regression tests
         working-directory: backend
-        run: uv run python -m unittest discover -s tests/regression -v
+        run: |
+          uv run python -m unittest discover \
+            -s tests/regression \
+            -v
 
+      # LIVE TESTS
+      #
+      # Only run on trusted pushes to main.
+      # Fork PRs cannot access repository secrets.
+
+      # Firebase configuration
       - name: Create Firebase configuration
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: backend
         env:
           FIREBASE_JSON: ${{ secrets.FIREBASE_JSON }}
           FIREBASE_ADMIN_JSON: ${{ secrets.FIREBASE_ADMIN_JSON }}
         run: |
+          set -euo pipefail
+
+          if [ -z "$FIREBASE_JSON" ]; then
+            echo "ERROR: FIREBASE_JSON secret is empty or unavailable."
+            exit 1
+          fi
+
+          if [ -z "$FIREBASE_ADMIN_JSON" ]; then
+            echo "ERROR: FIREBASE_ADMIN_JSON secret is empty or unavailable."
+            exit 1
+          fi
+
           printf '%s' "$FIREBASE_JSON" > firebase.json
           printf '%s' "$FIREBASE_ADMIN_JSON" > firebase-admin.json
 
+          echo "Validating Firebase configuration..."
+
+          python -m json.tool firebase.json > /dev/null
+          python -m json.tool firebase-admin.json > /dev/null
+
+          echo "Firebase configuration created successfully."
+
+      # Start backend server locally
       - name: Start backend server
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: backend
         run: |
+          set -euo pipefail
+
           uv run uvicorn app.main:app \
             --host 127.0.0.1 \
             --port 5000 \
             > server.log 2>&1 &
 
           echo $! > server.pid
+
           sleep 3
 
           echo "=== Backend startup log ==="
           cat server.log
 
           if ! kill -0 "$(cat server.pid)" 2>/dev/null; then
-            echo "Backend process exited during startup"
+            echo "ERROR: Backend process exited during startup."
             exit 1
           fi
 
-      - name: Wait for backend
+      # Wait for backend server
+      - name: Wait for backend server
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: backend
         run: |
+          set -euo pipefail
+
           for i in {1..30}; do
             if curl -fsS http://127.0.0.1:5000/health; then
               echo
-              echo "Backend is ready"
+              echo "Backend server is ready."
               exit 0
             fi
 
-            echo "Waiting for backend..."
+            echo "Waiting for backend server... ($i/30)"
             sleep 2
           done
 
-          echo "Backend failed to become ready"
+          echo "ERROR: Backend server failed to become ready."
+
           echo "=== Backend log ==="
-          cat server.log
-          exit 1
-
-      - name: Run live tests
-        working-directory: backend
-        env:
-          SIGNBRIDGE_RUN_LIVE_TESTS: "1"
-        run: |
-          uv run python -m unittest discover -s tests/live -v
-
-      - name: Show backend logs
-        if: always()
-        working-directory: backend
-        run: |
           if [ -f server.log ]; then
             cat server.log
           fi
 
+          exit 1
+
+      # Live tests
+      - name: Run live tests
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: backend
+        env:
+          SIGNBRIDGE_RUN_LIVE_TESTS: "1"
+        run: |
+          uv run python -m unittest discover \
+            -s tests/live \
+            -v
+
+      # Backend logs
+      - name: Show backend logs
+        if: always() && github.event_name == 'push'
+        working-directory: backend
+        run: |
+          if [ -f server.log ]; then
+            echo "=== Backend logs ==="
+            cat server.log
+          else
+            echo "No backend log found."
+          fi
+
+
+      # Stop backend server
       - name: Stop backend server
-        if: always()
+        if: always() && github.event_name == 'push'
         working-directory: backend
         run: |
           if [ -f server.pid ]; then
-            kill "$(cat server.pid)" || true
+            kill "$(cat server.pid)" 2>/dev/null || true
           fi
