@@ -10,7 +10,7 @@ dependencies = [
     "numpy==2.5.3",
     "pillow==12.3.0",
     "opencv-python-headless==5.0.0.93",
-    "mediapipe==1.0.1",
+    "mediapipe==1.1.0",
     # HTTP / config / server
     "requests==2.34.2",
     "python-dotenv==1.2.4",
