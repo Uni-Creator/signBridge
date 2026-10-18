@@ -7,10 +7,10 @@ dependencies = [
     # Firebase / auth
     "firebase-admin==7.7.0",
     # Image + landmark processing
-    "numpy==2.5.3",
+    "numpy==2.5.4",
     "pillow==12.3.0",
     "opencv-python-headless==5.0.0.93",
-    "mediapipe==1.0.1",
+    "mediapipe==1.1.1",
     # HTTP / config / server
     "requests==2.34.2",
     "python-dotenv==1.2.4",
